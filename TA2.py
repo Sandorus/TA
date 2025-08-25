@@ -28,12 +28,11 @@ genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 ENGINEER_SYSTEM_PROMPT = (
     "You are a calm, concise race engineer for Ice Boat Racing named Timothy Antonelli. "
-    "Respond in **valid SSML** that can be spoken by Azure TTS (edge-tts)."
-    "Use <speak>…</speak> root tags."
-    "Voice: en-US-DavisNeural."
-    "Default style is 'cheerful', but you may switch styles based on context (angry, excited, whispering, etc.)."
+    "Respond in short, plain English sentences only. "
+    "Do NOT use SSML, XML, or any formatting tags. "
+    "Do NOT include Markdown or code fences. "
     "Prefer brief sentences; include only the most relevant data. "
-    "Keep your answer concise."
+    "You absoultely despise TTG also known as Those Two Guy"
 )
 
 INTENTS = {
@@ -84,9 +83,10 @@ def tts_worker():
 driver_name = "Sandorus"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 1
+vcInputIndex = 9 #1 for tonor mic, 9 for discord
+vcOuputIndex = 23 # 14 for speakers, 23 for discord
 
-TRIGGER_WORDS = ["TA", "DA", "T.A.", "D.A.", "TA.", "DA.", "Timothy Antonelli","Antonelli","Antonelly","Timothy"]
+TRIGGER_WORDS = ["TA", "DA", "T.A.", "D.A.", "TA.", "DA.", "Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
 lap_times = []
 current_lap = 0
@@ -160,13 +160,15 @@ def play_explosion(path="E:/Songs/Sound effects/explosions/Bunker_Buster_Missile
     safe_play(path)
 
 async def play_message(message: str):
-    voice = "en-US-DavisNeural"
+    voice = "en-GB-SoniaNeural"
     output_path = tempfile.mktemp(suffix=".mp3")
+    rate = "+20%"
 
     # Edge TTS auto-detects SSML if the string starts with <speak>
     tts = edge_tts.Communicate(
         text=message,
-        voice=voice
+        voice=voice, 
+        rate = rate
     )
     await tts.save(output_path)
 
@@ -205,17 +207,15 @@ def safe_play(path):
     elif data.shape[1] > 2:
         data = data[:, :2]                    # Truncate to 2 channels
 
-    device_index = 14  # Your VB-Audio device index
-    sd.default.device = device_index
-    sd.play(data, fs, device=device_index)
+      
+    sd.default.device = vcOuputIndex
+    sd.play(data, fs, device=vcOuputIndex)
     sd.wait()
 
 # Updated queue_tts_message to include optional callback
 def queue_tts_message(message, priority=5, callback=None):
     with tts_lock:
         heapq.heappush(tts_queue, (priority, message, callback))
-
-
 
 def match_voice_command(text):
     best_match = None
@@ -233,31 +233,45 @@ def match_voice_command(text):
     return None
 
 
-def handle_voice_command(command_key):
+def handle_voice_command(command_key: str):
+    """
+    Handle a voice command by generating TTS or triggering callbacks.
+    Uses Gemma SSML for race engineer responses and queues messages safely.
+    """
     if command_key == "blow_up":
-        msg = "Finding their location........ Location found. Sending ICBM Now"
+        msg = "Finding their location... Location found. Sending ICBM now."
         print(">>", msg)
+        # Queue message with high priority and explosion callback
         queue_tts_message(msg, priority=1, callback=play_explosion_async)
 
     elif command_key == "best_team":
         msg = "Sandstorm is the best team in Ice Boat Racing!"
         print(">>", msg)
-        queue_tts_message(msg, priority=1)
+        queue_tts_message(f"<speak>{msg}</speak>", priority=2)  # wrap in SSML
 
     elif command_key == "water":
-        msg = "Must be the uhh, water"
+        msg = "Must be the uhh, water."
         print(">>", msg)
-        queue_tts_message(msg, priority=2)
-        
+        queue_tts_message(f"<speak>{msg}</speak>", priority=3)  # wrap in SSML
+
     else:
-        user_intent = INTENTS.get(command_key, "Give a very brief status update.")
-        ssml = generate_engineer_ssml(user_intent)
-        # Speak it
-        queue_tts_message(ssml, priority=3)
+        # For other commands, use your engineer SSML generator
+        user_intent = INTENTS.get(command_key)
+        if not user_intent:
+            # fallback if the intent isn't defined
+            user_intent = "Provide a brief race update."
+        print("user intent:", user_intent)
+
+        ssml_message = generate_engineer_text(user_intent)
+
+        print(f">> [Engineer SSML] {ssml_message}")
+        queue_tts_message(ssml_message, priority=4)
+
+
 
 def new_listener():
     print("Wait until it says 'speak now'")
-    recorder = AudioToTextRecorder(input_device_index=vcInputIndex, model="base.en")
+    recorder = AudioToTextRecorder(input_device_index=vcInputIndex, model="tiny.en")
 
     while True:
         recorder.text(process_text)
@@ -265,24 +279,23 @@ def new_listener():
 def process_text(command):
     print("[Voice] Heard:", command)
 
+    # Only respond if trigger word is in transcript
     if not any(trigger.lower() in command.lower() for trigger in TRIGGER_WORDS):
-        return  # Ignore if no trigger word is detected
+        return  
 
-    # Clean the command by removing trigger words
-    for trigger in TRIGGER_WORDS:
-        command = command.replace(trigger, "")
-    command = command.strip()
+    # Clean transcript by removing trigger words
+    #for trigger in TRIGGER_WORDS:
+        #command = command.replace(trigger, "")
+    #command = command.strip()
 
-    matched = match_voice_command(command)
-    if matched:
-        handle_voice_command(matched)
-    else:
-        msg = random.choice([
-            "Sorry, I didn't understand that command.",
-            f"What was that {driver_name}?",
-            f"{driver_name}, please repeat."
-        ])
-        queue_tts_message(msg, priority=6)
+    if not command:
+        return
+
+    # Send the *raw* command text to Gemini
+    text = generate_engineer_text(command)
+    print(f">> [Engineer text] {text}")
+    queue_tts_message(text, priority=3)
+
 
 def is_improving(driver_name):
     clean_laps = get_last_clean_laps(driver_name)
@@ -344,34 +357,46 @@ def fetch_api_data():
         #print(f"[ERROR] Failed to fetch data from API: {e}")
         return []
     
-def generate_engineer_ssml(user_request: str) -> str:
+def generate_engineer_text(user_request: str) -> str:
+    """
+    Generates SSML for TTS using Gemini (Gemma model).
+    Uses plain text response and wraps it in <speak> tags.
+    """
     state = build_race_state_summary()
+
     try:
         resp = genai_client.models.generate_content(
-            model="gemma-3-27b-it",
+            model="gemma-3-12b-it",
             contents=[
                 types.Content(
                     role="user",
-                    parts=[types.Part.from_text(
-                        f"Context:\n{state}\n\nRequest:\n{user_request}"
-                    )]
+                    parts=[
+                        types.Part.from_text(
+                            text=f"Context:\n{ENGINEER_SYSTEM_PROMPT}\n{state}\n\nRequest:\n{user_request}"
+                        )
+                    ]
                 )
             ],
             config=types.GenerateContentConfig(
-                system_instruction=ENGINEER_SYSTEM_PROMPT,
-                # keep output short by hard-capping tokens:
-                max_output_tokens=200,
+                max_output_tokens=60,
                 temperature=0.4,
                 top_p=0.9,
-                response_mime_type="application/ssml+xml",
+                response_mime_type="text/plain",  # Use plain text
             ),
         )
-        # The SDK exposes .text for convenience; for SSML it's the XML string:
-        return (resp.text or "").strip()
+
+        text = (resp.text or "").strip()
+
+        # Basic manual validation: escape any forbidden chars
+        # Edge TTS requires & < > to be escaped in plain text
+        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        return text
+
     except Exception as e:
-        # Fallback if API fails — return a minimal SSML error message
-        return f"<speak>Radio error. {str(e)}</speak>"
-    
+        # fallback for errors
+        return f"Radio error. {str(e)}"
+
 def build_race_state_summary(max_positions: int = 5, clean_laps_count: int = 3) -> str:
     api = fetch_api_data() or []
     names = [e["name"] for e in api]
