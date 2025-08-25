@@ -1,0 +1,136 @@
+{
+  "gap_leader": [
+  "what is my gap to the leader",
+  "how far am I from the leader",
+  "leader gap",
+  "time to the leader",
+  "how far is the leader",
+  "am I catching the leader",
+  "is the leader pulling away",
+  "leader distance",
+  "where is the leader",
+  "am I gaining on the leader",
+  "what is gap to leader"
+],
+  "gap_behind": [
+  "how far is the person behind me",
+  "how far is the guy behind me",
+  "gap to the boat behind",
+  "time to the boat behind",
+  "is anyone close behind",
+  "who is behind me",
+  "is someone chasing me",
+  "how close is the next boat",
+  "am I being caught",
+  "who’s on my tail",
+  "am I pulling away"
+],
+  "pit_strategy": [
+  "what lap do I pit",
+  "when do I pit",
+  "when is my pit stop",
+  "which lap is pit",
+  "what is my tire change lap",
+  "what's the pit strategy",
+  "how many laps until pit",
+  "when do I box",
+  "when do I change tires",
+  "is this a pit lap"
+],"current_lap": [
+    "what lap am I on",
+    "which lap is this",
+    "lap number",
+    "what's my current lap",
+    "how many laps have I done",
+    "how far in the race am I"
+  ],
+  "fastest_lap": [
+    "what's my fastest lap",
+    "what is my best lap time",
+    "fastest lap",
+    "how fast have I gone",
+    "what's my quickest lap"
+  ],
+  "position": [
+    "what's my position",
+    "where am I in the race",
+    "am I winning",
+    "who's ahead of me",
+    "what place am I in",
+    "race position"
+  ],
+  "greeting": [
+    "hello",
+    "hey",
+    "yo",
+    "hi there",
+    "wassup"
+  ],
+  "on_pace": [
+    "am I on pace",
+    "how's my pace",
+    "am I fast enough",
+    "am I doing good",
+    "how's my speed",
+    "am I keeping up"
+  ],
+  "current_strategy": [
+    "what is my current strategy",
+    "what's the plan",
+    "what tire strategy am I on",
+    "am I doing a one stop",
+    "tell me the race plan",
+    "what's our race strategy"
+  ],
+  "best_team": [
+    "what is the best team",
+    "best team",
+    "greatest team",
+    "best team in ibr",
+    "best ice boat racing team",
+    "are sandstorm the best team"
+  ],
+  "blow_up": [
+    "blow up this guys house",
+    "kill him",
+    "blow up her house",
+    "blow up his house",
+    "blow him up",
+    "blow up",
+    "delete this guy",
+    "bomb him",
+    "send a missile to his house"
+  ],
+  "water": [
+    "I have the seat full of water, like full of water",
+    "the seat is full of water",
+    "the boat is full of water",
+    "there is water in my boat"
+  ], 
+  "is_improving": [
+    "am I improving",
+    "am I getting faster",
+    "is my pace improving",
+    "are my lap times better",
+    "am I on an upward trend",
+    "how is my performance changing"
+],
+
+"leader_name": [
+    "who is the leader",
+    "who's winning the race",
+    "who is in first place",
+    "tell me the leader",
+    "who's ahead",
+    "lead driver"
+],
+
+"gap_ahead": [
+    "what's the gap to the car ahead",
+    "how far am I from the driver in front",
+    "distance to car ahead",
+    "what's my gap to the next driver",
+    "how close is the car ahead",
+    "gap to driver in front"
+]
+}

@@ -1,0 +1,42 @@
+{
+	"schemaVersion": 1,
+	"id": "packetlogger",
+	"version": "${version}",
+	"name": "packetlogger",
+	"description": "Logs all incoming packets on the client side to latest.log",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/packetlogger/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.packetlogger.Packetlogger"
+		],
+		"client": [
+			"com.packetlogger.PacketloggerClient"
+		]
+	},
+	"mixins": [
+		"packetlogger.mixins.json",
+		{
+			"config": "packetlogger.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.16.14",
+		"minecraft": "~1.21.1",
+		"java": ">=21",
+		"fabric-api": "*",
+		"racing_scoreboard": "*"
+	},
+	"suggests": {
+		"another-mod": "*"
+	}
+}
