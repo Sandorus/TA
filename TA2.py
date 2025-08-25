@@ -17,6 +17,41 @@ import edge_tts
 import asyncio
 import numpy as np
 import tempfile
+from google import genai
+from google.genai import types
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise RuntimeError("Set GEMINI_API_KEY in your environment.")
+
+genai_client = genai.Client(api_key=GEMINI_API_KEY)
+
+ENGINEER_SYSTEM_PROMPT = (
+    "You are a calm, concise race engineer for Ice Boat Racing named Timothy Antonelli. "
+    "Respond in **valid SSML** that can be spoken by Azure TTS (edge-tts)."
+    "Use <speak>…</speak> root tags."
+    "Voice: en-US-DavisNeural."
+    "Default style is 'cheerful', but you may switch styles based on context (angry, excited, whispering, etc.)."
+    "Prefer brief sentences; include only the most relevant data. "
+    "Keep your answer concise."
+)
+
+INTENTS = {
+    "pit_strategy": "Explain the upcoming pit stop and tyre plan.",
+    "gap_behind": "Report the gap to the car behind and give one short tip.",
+    "gap_ahead": "Report the gap to the car ahead and give one short tip.",
+    "gap_leader": "Report the gap to the race leader.",
+    "current_lap": "Confirm current lap and whether pace is consistent.",
+    "fastest_lap": "State our fastest lap and whether we are improving.",
+    "position": "Say our current position in the race.",
+    "on_pace": "Say if we are on pace vs leader and what to adjust briefly.",
+    "is_improving": "Say if pace is improving compared to recent laps.",
+    "leader_name": "Say the race leader's name.",
+    "current_strategy": "Summarize the full pit strategy briefly.",
+    "best_team": "Cheer the team briefly.",
+    "greeting": "Greet the driver briefly.",
+    "water": "Make a light short quip about water.",
+}
 
 with open("commands.json", "r") as f:
     command_phrases = json.load(f)
@@ -125,30 +160,41 @@ def play_explosion(path="E:/Songs/Sound effects/explosions/Bunker_Buster_Missile
     safe_play(path)
 
 async def play_message(message: str):
-    # Use edge-tts to synthesize the message to a temporary file
-    #voices en-GB-SoniaNeural  ja-JP-KeitaNeural ja-JP-NanamiNeural
-    voice = "ja-JP-NanamiNeural"  # You can change the voice here
+    voice = "en-US-DavisNeural"
     output_path = tempfile.mktemp(suffix=".mp3")
-    rate = "+20%"
-    pitch = "+20Hz"
-    
-    message = message+"desuwa"
-    tts = edge_tts.Communicate(text=message, voice=voice, rate=rate, pitch=pitch)
+
+    # Edge TTS auto-detects SSML if the string starts with <speak>
+    tts = edge_tts.Communicate(
+        text=message,
+        voice=voice
+    )
     await tts.save(output_path)
 
     safe_play(output_path)
-
-    # Clean up
     os.remove(output_path)
 
+
+
 def play_tts_message(message: str):
+    """
+    Runs play_message inside its own event loop to avoid asyncio.run() conflicts.
+    """
     play_notification_sound()
-    asyncio.run(play_message(message))
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(play_message(message))
+    loop.close()
+
 
 def play_notification_sound(path="E:/Songs/Sound effects/F1_Radio_-_Notification_Sound.mp3"):
     safe_play(path)
 
+
 def safe_play(path):
+    """
+    Safely play audio files through VB-Audio Virtual Cable (stereo enforced).
+    """
     data, fs = sf.read(path)
 
     # Ensure 2D array for sounddevice
@@ -158,19 +204,11 @@ def safe_play(path):
         data = np.repeat(data, 2, axis=1)     # Single channel → Stereo
     elif data.shape[1] > 2:
         data = data[:, :2]                    # Truncate to 2 channels
-    
-    device_name = "CABLE Input (VB-Audio Virtual C"
-    device_index = 14
 
-    if device_index is not None:
-        sd.default.device = device_index
-    else:
-        print(f"Device '{device_name}' not found")
-    # Explicitly set the output device if needed
-
-    sd.play(data, fs, device=14)
+    device_index = 14  # Your VB-Audio device index
+    sd.default.device = device_index
+    sd.play(data, fs, device=device_index)
     sd.wait()
-
 
 # Updated queue_tts_message to include optional callback
 def queue_tts_message(message, priority=5, callback=None):
@@ -196,188 +234,26 @@ def match_voice_command(text):
 
 
 def handle_voice_command(command_key):
-    if command_key == "pit_strategy":
-        if pit_laps:
-            next_pit = next((lap for lap, _ in pit_laps if lap >= current_lap), None)
-            if next_pit:
-                compound = next(c for l, c in pit_laps if l == next_pit)
-                msg = f"You will pit on lap {next_pit} for {compound}"
-            else:
-                msg = "No more pit stops scheduled"
-        else:
-            msg = "Pit strategy not available"
-        print(">>", msg)
-        queue_tts_message(msg, priority=3)
-
-    elif command_key == "blow_up":
+    if command_key == "blow_up":
         msg = "Finding their location........ Location found. Sending ICBM Now"
         print(">>", msg)
         queue_tts_message(msg, priority=1, callback=play_explosion_async)
-
-    elif command_key == "gap_behind":
-        api_data = fetch_api_data()
-        if not api_data:
-            msg = "No data available for gap to car behind"
-        else:
-            # API data is ordered by race position
-            names = [entry["name"] for entry in api_data]
-            if driver_name in names:
-                you_index = names.index(driver_name)
-                if you_index < len(names) - 1:
-                    you_entry = api_data[you_index]
-                    behind_entry = api_data[you_index + 1]
-
-                    you_diff = you_entry.get("timeDiff", None)
-                    behind_diff = behind_entry.get("timeDiff", None)
-
-                    if you_diff is not None and behind_diff is not None:
-                        gap = (behind_diff - you_diff) / 1000  # convert ms to seconds
-                        msg = f"Gap to car behind is {gap:.2f} seconds"
-                    else:
-                        msg = "TimeDiff data missing"
-                else:
-                    msg = "No car behind you"
-            else:
-                msg = "Your driver not found in API"
-
-        print(">>", msg)
-        queue_tts_message(msg, priority=3)
-
-    elif command_key == "gap_ahead":
-        api_data = fetch_api_data()
-        names = [entry["name"] for entry in api_data]
-        if driver_name in names:
-            you_index = names.index(driver_name)
-            if you_index > 0:
-                ahead_entry = api_data[you_index - 1]
-                you_entry = api_data[you_index]
-                gap = (you_entry["timeDiff"] - ahead_entry["timeDiff"]) / 1000
-                msg = f"Gap to car ahead is {gap:.2f} seconds"
-            else:
-                msg = "You're in the lead, no one ahead"
-        else:
-            msg = "Your driver not found"
-        queue_tts_message(msg, priority=3)
-
-
-    elif command_key == "gap_leader":
-        api_data = fetch_api_data()
-        if not api_data:
-            msg = "No data available for gap to leader"
-        else:
-            # The first driver is the leader; timeDiff is 0
-            leader_name = api_data[0]["name"]
-
-            if leader_name == driver_name:
-                msg = "You are the race leader"
-            else:
-                you_entry = next((entry for entry in api_data if entry["name"] == driver_name), None)
-                if you_entry and "timeDiff" in you_entry:
-                    gap = you_entry["timeDiff"] / 1000  # ms to seconds
-                    msg = f"Gap to leader is {gap:.2f} seconds"
-                else:
-                    msg = "Your data not found in API"
-
-        print(">>", msg)
-        queue_tts_message(msg, priority=3)
-
-    elif command_key == "current_lap":
-        msg = f"You are on lap {current_lap}"
-        print(">>", msg)
-        queue_tts_message(msg, priority=3)
-
-    elif command_key == "fastest_lap":
-        if fastest_lap:
-            msg = f"Your fastest lap is {fastest_lap:.3f} seconds"
-        else:
-            msg = "No lap data available yet"
-        print(">>", msg)
-        queue_tts_message(msg, priority=3)
-
-    elif command_key == "position":
-        positions = get_current_positions(drivers)
-        for i, (name, _, _) in enumerate(positions):
-            if name == driver_name:
-                msg = f"You are in position {i + 1}"
-                print(">>", msg)
-                queue_tts_message(msg, priority=3)
-                break
-        else:
-            queue_tts_message("You are not in the standings yet", priority=5)
-
-    elif command_key == "on_pace":
-        positions = get_current_positions(drivers)
-        if positions:
-            leader_name = positions[0][0]
-
-            leader_clean = get_last_clean_laps(leader_name)
-            you_clean = get_last_clean_laps(driver_name)
-
-            if leader_clean and you_clean:
-                leader_avg = sum(leader_clean) / len(leader_clean)
-                you_avg = sum(you_clean) / len(you_clean)
-                diff = abs(you_avg - leader_avg)
-
-                if you_avg < leader_avg:
-                    msg = f"You are {diff:.3f} seconds faster than the leader, keep it up"
-                else:
-                    msg = f"You are {diff:.3f} seconds off pace, push harder"
-            else:
-                msg = "Not enough clean laps to calculate pace"
-        else:
-            msg = "No race data yet"
-
-        print(">>", msg)
-        queue_tts_message(msg, priority=3)
-
-    elif command_key == "is_improving":
-        msg = is_improving(driver_name)
-        print(">>", msg)
-        queue_tts_message(msg, priority=4)
-
-    elif command_key == "leader_name":
-        positions = get_current_positions(drivers)
-        if positions:
-            leader_name = positions[0][0]  # First tuple’s first element is leader’s name
-            msg = f"The race leader is {leader_name}"
-        else:
-            msg = "No race data available to determine the leader"
-        
-        print(">>", msg)
-        queue_tts_message(msg, priority=5)
-
-
-    elif command_key == "current_strategy":
-        strategy_list = ", then ".join([f"{compound} for {laps} laps" for compound, laps in pit_strategy])
-        msg = f"Your strategy is: {strategy_list}"
-        print(">>", msg)
-        queue_tts_message(msg, priority=3)
 
     elif command_key == "best_team":
         msg = "Sandstorm is the best team in Ice Boat Racing!"
         print(">>", msg)
         queue_tts_message(msg, priority=1)
 
-    elif command_key == "greeting":
-        msg = "Hi, I can hear you!"
-        print(">>", msg)
-        queue_tts_message(msg, priority=2)
-
     elif command_key == "water":
         msg = "Must be the uhh, water"
         print(">>", msg)
         queue_tts_message(msg, priority=2)
         
-    
-
     else:
-        msg = random.choice([
-            "Sorry, I didn't understand that command.",
-            f"What was that {driver_name}?",
-            f"{driver_name}, please repeat."
-        ])
-        print(">>", msg)
-        queue_tts_message(msg, priority=5)
+        user_intent = INTENTS.get(command_key, "Give a very brief status update.")
+        ssml = generate_engineer_ssml(user_intent)
+        # Speak it
+        queue_tts_message(ssml, priority=3)
 
 def new_listener():
     print("Wait until it says 'speak now'")
@@ -467,6 +343,83 @@ def fetch_api_data():
     except requests.RequestException as e:
         #print(f"[ERROR] Failed to fetch data from API: {e}")
         return []
+    
+def generate_engineer_ssml(user_request: str) -> str:
+    state = build_race_state_summary()
+    try:
+        resp = genai_client.models.generate_content(
+            model="gemma-3-27b-it",
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(
+                        f"Context:\n{state}\n\nRequest:\n{user_request}"
+                    )]
+                )
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=ENGINEER_SYSTEM_PROMPT,
+                # keep output short by hard-capping tokens:
+                max_output_tokens=200,
+                temperature=0.4,
+                top_p=0.9,
+                response_mime_type="application/ssml+xml",
+            ),
+        )
+        # The SDK exposes .text for convenience; for SSML it's the XML string:
+        return (resp.text or "").strip()
+    except Exception as e:
+        # Fallback if API fails — return a minimal SSML error message
+        return f"<speak>Radio error. {str(e)}</speak>"
+    
+def build_race_state_summary(max_positions: int = 5, clean_laps_count: int = 3) -> str:
+    api = fetch_api_data() or []
+    names = [e["name"] for e in api]
+    you_ix = names.index(driver_name) if driver_name in names else -1
+
+    # Top N order with pits and ms diffs
+    table = []
+    for i, e in enumerate(api[:max_positions], start=1):
+        nm = e["name"]
+        td = e.get("timeDiff", 0)  # ms since leader
+        pits = e.get("pits", 0)
+        table.append(f"{i}. {nm}  (Δ{td/1000:.3f}s, pits:{pits})")
+
+    # You + gaps
+    gap_ahead = None
+    gap_behind = None
+    if you_ix >= 0:
+        you_td = api[you_ix].get("timeDiff", 0)
+        if you_ix > 0:
+            gap_ahead = (you_td - api[you_ix - 1].get("timeDiff", 0)) / 1000
+        if you_ix < len(api) - 1:
+            gap_behind = (api[you_ix + 1].get("timeDiff", 0) - you_td) / 1000
+
+    # Your laps
+    last_clean = get_last_clean_laps(driver_name, count=clean_laps_count) or []
+    last_clean_str = ", ".join(f"{t:.3f}s" for t in last_clean) if last_clean else "n/a"
+
+    # Next scheduled pit from your configured strategy
+    next_pit = next((lap for lap, _ in pit_laps if lap >= current_lap), None)
+    next_compound = next((c for l, c in pit_laps if l == next_pit), None) if next_pit else None
+    next_pit_str = f"lap {next_pit} ({next_compound})" if next_pit else "none"
+
+    # Fastest
+    fl = f"{fastest_lap:.3f}s" if fastest_lap else "n/a"
+
+    lines = [
+        f"Driver: {driver_name}",
+        f"Current lap: {current_lap}",
+        f"Fastest lap: {fl}",
+        f"Last clean laps ({clean_laps_count}): {last_clean_str}",
+        f"Next scheduled pit: {next_pit_str}",
+        "Top order:",
+        *table,
+        f"Gap ahead: {gap_ahead:.3f}s" if gap_ahead is not None else "Gap ahead: n/a",
+        f"Gap behind: {gap_behind:.3f}s" if gap_behind is not None else "Gap behind: n/a",
+    ]
+    return "\n".join(lines)
+
     
 def main_loop():
     print("Race tracking started (via API)...")
