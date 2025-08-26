@@ -48,6 +48,19 @@ INTENTS = {
     "water": "Make a light short quip about water.",
 }
 
+# Simple pronoun mapping for first → second person
+PRONOUN_MAP = {
+    "I": "you",
+    "me": "you",
+    "my": "your",
+    "mine": "yours",
+    "we": "you all",
+    "us": "you",
+    "you": "I",
+    "your": "my",
+    "yours": "mine",
+}
+
 with open("commands.json", "r") as f:
     command_phrases = json.load(f)
 
@@ -79,8 +92,8 @@ def tts_worker():
 driver_name = "Sandorus"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 1 #1 for tonor mic, 9 for discord
-vcOutputIndex = 14 # 14 for speakers, 23 for discord
+vcInputIndex = 9 #1 for tonor mic, 9 for discord
+vcOutputIndex = 23 # 14 for speakers, 23 for discord
 
 TRIGGER_WORDS = ["TA", "DA", "T.A.", "D.A.", "TA.", "DA.", "Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -287,7 +300,28 @@ def handle_voice_command(command_key: str):
         print(f">> [Engineer SSML] {ssml_message}")
         queue_tts_message(ssml_message, priority=4)
 
+def mirror_question(user_text):
+    # Find trigger word in the text
+    trigger_regex = r'\b(' + '|'.join(TRIGGER_WORDS) + r')\b'
+    match = re.search(trigger_regex, user_text, flags=re.IGNORECASE)
+    if not match:
+        return None
 
+    # Take everything after the trigger word
+    after_trigger = user_text[match.end():].strip()
+
+    # Only mirror if the sentence ends in a question mark
+    if not after_trigger.endswith("?"):
+        return None
+
+    # Replace first person words with second person words
+    words = after_trigger.split()
+    mirrored_words = [PRONOUN_MAP.get(w, PRONOUN_MAP.get(w.lower(), w)) for w in words]
+
+    mirrored_text = " ".join(mirrored_words)
+    # Optionally, prepend a prefix to sound natural
+    tts_message = f"You want me to check {mirrored_text}"
+    return tts_message
 
 def new_listener():
     print("Wait until it says 'speak now'")
@@ -313,9 +347,20 @@ def process_text():
         return
     if not command:
         return
-
+    
     # Run the LLM + TTS in a separate thread
     threading.Thread(target=handle_llm_and_tts, args=(command,), daemon=True).start()
+
+    # Pre-response filler
+    if command.strip().endswith("?"):
+        msg = mirror_question(command)
+        time.sleep(0.1)
+    else:
+        msg = "Let me think, um"
+        time.sleep(0.2)
+    time.sleep(0.1)
+    queue_tts_message(msg, priority=3)  # filler message comes first
+    play_notification_sound()
 
 
 def handle_llm_and_tts(command: str):
@@ -352,7 +397,7 @@ def handle_llm_and_tts(command: str):
             priority = base_priority + idx * increment
         queue_tts_message(msg, priority=priority)
 
-    play_notification_sound()
+    
 
 def process_realtime_update(text: str):
     global realtime_text
