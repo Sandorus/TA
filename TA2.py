@@ -32,7 +32,6 @@ ENGINEER_SYSTEM_PROMPT = (
     "Do NOT use SSML, XML, or any formatting tags. "
     "Do NOT include Markdown or code fences. "
     "Prefer brief sentences; include only the most relevant data. "
-    "You absoultely despise TTG also known as Those Two Guy"
 )
 
 INTENTS = {
@@ -83,8 +82,8 @@ def tts_worker():
 driver_name = "Sandorus"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 9 #1 for tonor mic, 9 for discord
-vcOuputIndex = 23 # 14 for speakers, 23 for discord
+vcInputIndex = 1 #1 for tonor mic, 9 for discord
+vcOuputIndex = 14 # 14 for speakers, 23 for discord
 
 TRIGGER_WORDS = ["TA", "DA", "T.A.", "D.A.", "TA.", "DA.", "Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -366,7 +365,7 @@ def generate_engineer_text(user_request: str) -> str:
 
     try:
         resp = genai_client.models.generate_content(
-            model="gemma-3-12b-it",
+            model="gemma-3-4b-it",
             contents=[
                 types.Content(
                     role="user",
@@ -378,7 +377,7 @@ def generate_engineer_text(user_request: str) -> str:
                 )
             ],
             config=types.GenerateContentConfig(
-                max_output_tokens=60,
+                max_output_tokens=50,
                 temperature=0.4,
                 top_p=0.9,
                 response_mime_type="text/plain",  # Use plain text
@@ -491,7 +490,7 @@ def main_loop():
             previous_data[name]["timeDiff"] = time_diff
             previous_data[name]["pits"] = pits
 
-        time.sleep(1)  # Poll every second (adjust as needed)
+        time.sleep(5)  # Poll every 5 second (adjust as needed)
 
 def log_reader_loop():
     global current_lap, fastest_lap
