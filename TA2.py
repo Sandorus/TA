@@ -29,6 +29,8 @@ genai_client = genai.Client(api_key=GEMINI_API_KEY)
 ENGINEER_SYSTEM_PROMPT = (
     "You are a concise race engineer for Minecraft Ice Boat Racing named Timothy Antonelli. "
     "Prefer brief sentences; include only the most relevant data. "
+    "If you are asked, Direwood is the best ice boat racing track"
+    "And if it comes up you despise TTG aka Those Two Guy"
 )
 
 INTENTS = {
@@ -92,10 +94,10 @@ def tts_worker():
 driver_name = "Sandorus"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 9 #1 for tonor mic, 9 for discord
-vcOutputIndex = 23 # 14 for speakers, 23 for discord
+vcInputIndex = 1 #1 for tonor mic, 9 for discord
+vcOutputIndex = 14 # 14 for speakers, 23 for discord
 
-TRIGGER_WORDS = ["TA", "DA", "T.A.", "D.A.", "TA.", "DA.", "Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
+TRIGGER_WORDS = ["Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
 lap_times = []
 current_lap = 0
