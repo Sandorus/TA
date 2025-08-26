@@ -70,7 +70,7 @@ def tts_worker():
         if callback:
             callback()
         else:
-            time.sleep(0.1)  # Avoid tight spinning
+            time.sleep(0.01)  # Avoid tight spinning
 
 
 
@@ -89,6 +89,7 @@ current_lap = 0
 fastest_lap = None
 message = ""
 previous_data = {}
+realtime_text = ""
 
 previous_pit_counts = defaultdict(int)
 pit_laps_map = defaultdict(list)
@@ -185,7 +186,7 @@ def play_tts_message(message: str):
     """
     Sync wrapper: run the async play_message in its own event loop.
     """
-    play_notification_sound()
+    
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -293,33 +294,69 @@ def new_listener():
     recorder = AudioToTextRecorder(input_device_index=vcInputIndex, model="base.en",
         enable_realtime_transcription=True,
         use_main_model_for_realtime=True,
-        realtime_processing_pause=0.1,
+        realtime_processing_pause=0.2,
+        on_realtime_transcription_update=process_realtime_update,
         on_vad_stop=process_text,
-        no_log_file=True,)
+        no_log_file=True,
+        batch_size=16,
+        )
 
     while True:
-        recorder.text(process_text)
+        recorder.text()
 
-def process_text(command):
+def process_text():
+    command = realtime_text
     print("[Voice] Heard:", command)
 
-   # Only respond if transcript contains a trigger word and ends with punctuation
+    # Only respond if transcript contains a trigger word and ends with punctuation
     if not any(trigger.lower() in command.lower() for trigger in TRIGGER_WORDS):
         return
-
-
-    # Clean transcript by removing trigger words
-    #for trigger in TRIGGER_WORDS:
-        #command = command.replace(trigger, "")
-    #command = command.strip()
-
     if not command:
         return
 
-    # Send the *raw* command text to Gemini
+    # Run the LLM + TTS in a separate thread
+    threading.Thread(target=handle_llm_and_tts, args=(command,), daemon=True).start()
+
+
+def handle_llm_and_tts(command: str):
+    # Generate text response (Gemma)
     text = generate_engineer_text(command)
     print(f">> [Engineer text] {text}")
-    queue_tts_message(text, priority=3)
+
+    # Split text into chunks at punctuation (. ?)
+    chunks = re.split(r'([.?])', text)
+    
+    # Recombine punctuation with preceding text
+    messages = []
+    i = 0
+    while i < len(chunks) - 1:
+        part = chunks[i].strip()
+        punct = chunks[i + 1]
+        if part:
+            messages.append(part + punct)
+        i += 2
+    # Add any leftover text
+    if i < len(chunks):
+        leftover = chunks[i].strip()
+        if leftover:
+            messages.append(leftover)
+
+    # Queue the messages: first chunk priority=3, then increasing priority for each subsequent message
+    base_priority = 3
+    increment = 1  # or whatever step you want
+
+    for idx, msg in enumerate(messages):
+        if idx == 0:
+            priority = base_priority
+        else:
+            priority = base_priority + idx * increment
+        queue_tts_message(msg, priority=priority)
+
+    play_notification_sound()
+
+def process_realtime_update(text: str):
+    global realtime_text
+    realtime_text = text
 
 
 def is_improving(driver_name):
@@ -391,7 +428,7 @@ def generate_engineer_text(user_request: str) -> str:
 
     try:
         resp = genai_client.models.generate_content(
-            model="gemma-3-1b-it",
+            model="gemma-3-4b-it",
             contents=[
                 types.Content(
                     role="user",
@@ -472,6 +509,7 @@ def build_race_state_summary(max_positions: int = 5, clean_laps_count: int = 3) 
 
     
 def main_loop():
+    
     print("Race tracking started (via API)...")
     while True:
         data = fetch_api_data()
@@ -525,6 +563,7 @@ def log_reader_loop():
         message = ("Race tracking started. Waiting for lap data...")
         print(message)
         queue_tts_message(message, priority=0)
+        play_notification_sound()
         loglines = follow(logfile)
 
         for line in loglines:
