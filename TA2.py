@@ -5,7 +5,6 @@ from datetime import datetime
 from collections import defaultdict
 import threading
 import heapq
-import speech_recognition as sr
 from thefuzz import fuzz
 import json
 import random
@@ -16,9 +15,10 @@ import requests
 import edge_tts
 import asyncio
 import numpy as np
-import tempfile
 from google import genai
 from google.genai import types
+from pydub import AudioSegment
+import io
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
@@ -27,10 +27,7 @@ if not GEMINI_API_KEY:
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 ENGINEER_SYSTEM_PROMPT = (
-    "You are a calm, concise race engineer for Ice Boat Racing named Timothy Antonelli. "
-    "Respond in short, plain English sentences only. "
-    "Do NOT use SSML, XML, or any formatting tags. "
-    "Do NOT include Markdown or code fences. "
+    "You are a concise race engineer for Minecraft Ice Boat Racing named Timothy Antonelli. "
     "Prefer brief sentences; include only the most relevant data. "
 )
 
@@ -83,7 +80,7 @@ driver_name = "Sandorus"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
 vcInputIndex = 1 #1 for tonor mic, 9 for discord
-vcOuputIndex = 14 # 14 for speakers, 23 for discord
+vcOutputIndex = 14 # 14 for speakers, 23 for discord
 
 TRIGGER_WORDS = ["TA", "DA", "T.A.", "D.A.", "TA.", "DA.", "Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -160,25 +157,33 @@ def play_explosion(path="E:/Songs/Sound effects/explosions/Bunker_Buster_Missile
 
 async def play_message(message: str):
     voice = "en-GB-SoniaNeural"
-    output_path = tempfile.mktemp(suffix=".mp3")
     rate = "+20%"
+    # Generate MP3 audio in memory
+    tts = edge_tts.Communicate(text=message, voice=voice, rate=rate)
+    mp3_bytes = b""
+    async for chunk in tts.stream():
+        if chunk["type"] == "audio":
+            mp3_bytes += chunk["data"]
 
-    # Edge TTS auto-detects SSML if the string starts with <speak>
-    tts = edge_tts.Communicate(
-        text=message,
-        voice=voice, 
-        rate = rate
-    )
-    await tts.save(output_path)
+    # Decode MP3 → PCM in memory
+    audio = AudioSegment.from_file(io.BytesIO(mp3_bytes), format="mp3")
+    samples = np.array(audio.get_array_of_samples(), dtype=np.float32) / (2**15)
 
-    safe_play(output_path)
-    os.remove(output_path)
-
+    # Ensure stereo
+    if audio.channels == 1:
+        samples = np.column_stack((samples, samples))
+    elif audio.channels > 2:
+        samples = samples[:, :2]
+    print("playing message")
+    # Play via sounddevice
+    sd.default.device = vcOutputIndex
+    sd.play(samples, samplerate=audio.frame_rate, device=vcOutputIndex)
+    sd.wait()
 
 
 def play_tts_message(message: str):
     """
-    Runs play_message inside its own event loop to avoid asyncio.run() conflicts.
+    Sync wrapper: run the async play_message in its own event loop.
     """
     play_notification_sound()
 
@@ -189,7 +194,22 @@ def play_tts_message(message: str):
 
 
 def play_notification_sound(path="E:/Songs/Sound effects/F1_Radio_-_Notification_Sound.mp3"):
-    safe_play(path)
+    """Plays a notification sound asynchronously without blocking TTS."""
+    def _play():
+        data, fs = sf.read(path)
+        # Ensure stereo
+        if data.ndim == 1:
+            data = np.column_stack((data, data))
+        elif data.shape[1] == 1:
+            data = np.repeat(data, 2, axis=1)
+        elif data.shape[1] > 2:
+            data = data[:, :2]
+
+        sd.default.device = vcOutputIndex 
+        sd.play(data, fs)
+        sd.wait()
+
+    threading.Thread(target=_play, daemon=True).start()
 
 
 def safe_play(path):
@@ -207,8 +227,8 @@ def safe_play(path):
         data = data[:, :2]                    # Truncate to 2 channels
 
       
-    sd.default.device = vcOuputIndex
-    sd.play(data, fs, device=vcOuputIndex)
+    sd.default.device = vcOutputIndex
+    sd.play(data, fs, device=vcOutputIndex)
     sd.wait()
 
 # Updated queue_tts_message to include optional callback
@@ -270,7 +290,12 @@ def handle_voice_command(command_key: str):
 
 def new_listener():
     print("Wait until it says 'speak now'")
-    recorder = AudioToTextRecorder(input_device_index=vcInputIndex, model="tiny.en")
+    recorder = AudioToTextRecorder(input_device_index=vcInputIndex, model="base.en",
+        enable_realtime_transcription=True,
+        use_main_model_for_realtime=True,
+        realtime_processing_pause=0.1,
+        on_vad_stop=process_text,
+        no_log_file=True,)
 
     while True:
         recorder.text(process_text)
@@ -278,9 +303,10 @@ def new_listener():
 def process_text(command):
     print("[Voice] Heard:", command)
 
-    # Only respond if trigger word is in transcript
+   # Only respond if transcript contains a trigger word and ends with punctuation
     if not any(trigger.lower() in command.lower() for trigger in TRIGGER_WORDS):
-        return  
+        return
+
 
     # Clean transcript by removing trigger words
     #for trigger in TRIGGER_WORDS:
@@ -365,7 +391,7 @@ def generate_engineer_text(user_request: str) -> str:
 
     try:
         resp = genai_client.models.generate_content(
-            model="gemma-3-4b-it",
+            model="gemma-3-1b-it",
             contents=[
                 types.Content(
                     role="user",

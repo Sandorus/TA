@@ -9,6 +9,7 @@ import edge_tts
 import pyttsx3
 import sounddevice as sd
 import soundfile as sf
+import numpy as np
 
 
 # ========= Utilities ========= #
@@ -24,30 +25,41 @@ def play_wav_bytes(wav_bytes: bytes, device=14, block=True):
 # ========= EDGE-TTS ========= #
 
 VOICE = "en-US-AriaNeural"
-FORMAT = "riff-24khz-16bit-mono-pcm"  # WAV PCM
 
-async def edge_tts_wav(text: str) -> bytes:
+async def edge_tts_mp3(text: str) -> bytes:
+    """Generate MP3 audio bytes directly from Edge-TTS"""
     tts = edge_tts.Communicate(text=text, voice=VOICE)
     mp3_bytes = b""
-    async for chunk in tts.stream():
+    async for chunk in tts.stream():  # default MP3
         if chunk["type"] == "audio":
             mp3_bytes += chunk["data"]
+    return mp3_bytes
 
-    # Decode MP3 → WAV
+
+def play_mp3_bytes(mp3_bytes: bytes, device_index: int = None, block=True) -> float:
+    """Play MP3 bytes on a specific output device using sounddevice"""
     audio = AudioSegment.from_file(io.BytesIO(mp3_bytes), format="mp3")
-    buf = io.BytesIO()
-    audio.export(buf, format="wav")
-    return buf.getvalue()
+    samples = np.array(audio.get_array_of_samples())
+    np_audio = samples.astype(np.float32) / (2**15)
+
+    if audio.channels > 1:
+        np_audio = np_audio.reshape((-1, audio.channels))
+
+    t_start = time.perf_counter()
+    sd.play(np_audio, samplerate=audio.frame_rate, device=device_index, blocking=block)
+    t_end = time.perf_counter()
+
+    return t_start if block else t_end
+
 
 def run_edge_tts(text: str, device=14) -> float:
     print("\n--- Edge TTS ---")
     t0 = time.perf_counter()
-    wav_bytes = asyncio.run(edge_tts_wav(text))
-    t1 = play_wav_bytes(wav_bytes, device=device, block=True)
+    mp3_bytes = asyncio.run(edge_tts_mp3(text))
+    t1 = play_mp3_bytes(mp3_bytes, device_index=device, block=True)
     latency = t1 - t0
     print(f"Edge-TTS latency to first sound: {latency:.3f}s")
     return latency
-
 
 
 # ========= PIPER ========= #
@@ -90,7 +102,7 @@ def run_pyttsx3(text: str, device=14) -> float:
 # ========= Main ========= #
 
 def main():
-    text = "Hello, this is a latency test of Edge TTS, Piper, and pyttsx3."
+    text = "Testing streaming TTS with Edge-TTS and sounddevice, measuring latency to first sound. Testing streaming TTS with Edge-TTS and sounddevice, measuring latency to first sound."
     device_index = 14  # change this to your target output device
 
     lat_edge = run_edge_tts(text, device=device_index)
