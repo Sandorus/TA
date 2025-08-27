@@ -92,10 +92,11 @@ def tts_worker():
 
 # === Config ===
 driver_name = "Sandorus"
+API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
 vcInputIndex = 1 #1 for tonor mic, 9 for discord
-vcOutputIndex = 14 # 14 for speakers, 23 for discord
+vcOutputIndex = 23 # 14 for speakers, 23 for discord
 
 TRIGGER_WORDS = ["Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -149,7 +150,7 @@ def parse_timestamp(log_line):
     return None
 
 def get_current_positions(drivers_dict=None):
-    api_data = fetch_api_data()
+    api_data = fetch_api_data(driver_name)
     if not api_data:
         return []
 
@@ -457,21 +458,56 @@ def get_last_clean_laps(name, count=3):
                 clean_laps = [t for i, t in enumerate(all_laps, 1) if i not in pit_laps]
                 return clean_laps[-count:] if len(clean_laps) >= count else None
 
-def fetch_api_data():
+def fetch_api_data(driver_name: str):
+    """
+    Fetch the active heats and return all drivers from the heat containing `driver_name`.
+    Normalizes to a list of driver dicts + metadata.
+    """
     try:
-        response = requests.get("http://localhost:2732")
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        #print(f"[ERROR] Failed to fetch data from API: {e}")
-        return []
+        resp = requests.get(API_URL, timeout=10)
+        resp.raise_for_status()
+        heats = resp.json()
+    except Exception as e:
+        print(f"[API] Error fetching data: {e}")
+        return None
+
+    # Look through all heats to find the one with our driver
+    for heat in heats:
+        drivers = heat.get("drivers", [])
+        for driver in drivers:
+            if driver_name.lower() in driver["name"].lower():
+                # Normalize driver info
+                normalized = []
+                leader_time = min(d.get("time", 0) for d in drivers if d.get("position") == 1)
+                for d in drivers:
+                    td = d.get("time", 0)
+                    normalized.append({
+                        "name": d["name"],
+                        "position": d.get("position"),
+                        "lap": d.get("lap"),
+                        "time": td,
+                        "timeDiff": td - leader_time if leader_time else 0,
+                        "pits": heat.get("pits", 0),
+                    })
+
+                return {
+                    "event": heat.get("event_name"),
+                    "round": heat.get("round_name"),
+                    "heat": heat.get("heat_name"),
+                    "track": heat.get("track"),
+                    "laps_total": heat.get("laps"),
+                    "drivers": sorted(normalized, key=lambda x: x["position"] or 999),
+                }
+
+    print(f"[API] No active heat found for driver '{driver_name}'")
+    return None
     
 def generate_engineer_text(user_request: str) -> str:
     """
     Generates SSML for TTS using Gemini (Gemma model).
     Uses plain text response and wraps it in <speak> tags.
     """
-    state = build_race_state_summary()
+    state = build_race_state_summary(driver_name)
 
     try:
         resp = genai_client.models.generate_content(
@@ -506,42 +542,48 @@ def generate_engineer_text(user_request: str) -> str:
         # fallback for errors
         return f"Radio error. {str(e)}"
 
-def build_race_state_summary(max_positions: int = 5, clean_laps_count: int = 3) -> str:
-    api = fetch_api_data() or []
-    names = [e["name"] for e in api]
+def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_laps_count: int = 3) -> str:
+    data = fetch_api_data(driver_name)
+    if not data:
+        return f"No race data available for {driver_name}."
+
+    drivers = data["drivers"]
+    names = [d["name"] for d in drivers]
     you_ix = names.index(driver_name) if driver_name in names else -1
 
-    # Top N order with pits and ms diffs
+    # Top N order
     table = []
-    for i, e in enumerate(api[:max_positions], start=1):
-        nm = e["name"]
-        td = e.get("timeDiff", 0)  # ms since leader
-        pits = e.get("pits", 0)
-        table.append(f"{i}. {nm}  (Δ{td/1000:.3f}s, pits:{pits})")
+    for i, d in enumerate(drivers[:max_positions], start=1):
+        nm = d["name"]
+        td = d.get("timeDiff", 0)
+        pits = d.get("pits", 0)
+        table.append(f"{i}. {nm} (Δ{td/1000:.3f}s, pits:{pits})")
 
-    # You + gaps
+    # Gaps
     gap_ahead = None
     gap_behind = None
     if you_ix >= 0:
-        you_td = api[you_ix].get("timeDiff", 0)
+        you_td = drivers[you_ix].get("timeDiff", 0)
         if you_ix > 0:
-            gap_ahead = (you_td - api[you_ix - 1].get("timeDiff", 0)) / 1000
-        if you_ix < len(api) - 1:
-            gap_behind = (api[you_ix + 1].get("timeDiff", 0) - you_td) / 1000
+            gap_ahead = (you_td - drivers[you_ix - 1].get("timeDiff", 0)) / 1000
+        if you_ix < len(drivers) - 1:
+            gap_behind = (drivers[you_ix + 1].get("timeDiff", 0) - you_td) / 1000
 
-    # Your laps
+    # Your laps (placeholder – depends on your lap logging system)
     last_clean = get_last_clean_laps(driver_name, count=clean_laps_count) or []
     last_clean_str = ", ".join(f"{t:.3f}s" for t in last_clean) if last_clean else "n/a"
 
-    # Next scheduled pit from your configured strategy
+    # Next scheduled pit (assuming you have pit_laps + current_lap globals)
     next_pit = next((lap for lap, _ in pit_laps if lap >= current_lap), None)
     next_compound = next((c for l, c in pit_laps if l == next_pit), None) if next_pit else None
     next_pit_str = f"lap {next_pit} ({next_compound})" if next_pit else "none"
 
-    # Fastest
+    # Fastest lap (assuming you track it globally)
     fl = f"{fastest_lap:.3f}s" if fastest_lap else "n/a"
 
     lines = [
+        f"Event: {data['event']} ({data['round']} / {data['heat']})",
+        f"Track: {data['track']} | Total laps: {data['laps_total']}",
         f"Driver: {driver_name}",
         f"Current lap: {current_lap}",
         f"Fastest lap: {fl}",
@@ -559,7 +601,7 @@ def main_loop():
     
     print("Race tracking started (via API)...")
     while True:
-        data = fetch_api_data()
+        data = fetch_api_data(driver_name)
 
         for entry in data:
             name = entry["name"]
@@ -686,7 +728,7 @@ def log_reader_loop():
                             break
 
                     # === GAP/ORDER MESSAGES (using JSON API instead of timestamps) ===
-                    api_data = fetch_api_data()
+                    api_data = fetch_api_data(driver_name)
                     if not api_data:
                         continue  # skip this frame if API didn't return usable data
 
