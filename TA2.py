@@ -71,45 +71,21 @@ tts_queue = []
 tts_lock = threading.Lock()
 
 def tts_worker():
-    global next_audio_future, next_message
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     while True:
         with tts_lock:
-            if not tts_queue:
-                time.sleep(0.01)
-                continue
-            priority, message, callback = heapq.heappop(tts_queue)
-
-        # If no audio is preloaded, synthesize current one immediately
-        if next_audio_future is None:
-            next_audio_future = loop.create_task(synthesize_tts(message))
-            next_message = message
-
-        # Wait until audio is ready
-        samples, sr = loop.run_until_complete(next_audio_future)
-
-        # Start preloading the next queued message (if any) *while we play this one*
-        with tts_lock:
             if tts_queue:
-                priority2, message2, callback2 = heapq.heappop(tts_queue)
-                next_audio_future = loop.create_task(synthesize_tts(message2))
-                next_message = message2
+                priority, message, callback = heapq.heappop(tts_queue)
             else:
-                next_audio_future = None
-                next_message = None
-                callback2 = None
+                message = None
+                callback = None  # Initialize callback too
 
-        # Play current audio (blocking, but next is synthesizing already)
-        loop.run_until_complete(play_message(samples, sr))
+        if message:
+            play_tts_message(message)
 
         if callback:
             callback()
-        if next_message and callback2:
-            # If the *next* message had a callback, re-insert it with high priority
-            queue_tts_message(next_message, priority=0, callback=callback2)
+        else:
+            time.sleep(0.01)  # Avoid tight spinning
 
 
 
@@ -119,8 +95,8 @@ driver_name = "Sandorus"
 API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 1 #1 for tonor mic, 9 for discord
-vcOutputIndex = 14 # 14 for speakers, 23 for discord
+vcInputIndex = 9 #1 for tonor mic, 9 for discord
+vcOutputIndex = 23 # 14 for speakers, 23 for discord
 
 TRIGGER_WORDS = ["Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -130,8 +106,6 @@ fastest_lap = None
 message = ""
 previous_data = {}
 realtime_text = ""
-next_audio_future = None
-next_message = None
 
 previous_pit_counts = defaultdict(int)
 pit_laps_map = defaultdict(list)
@@ -198,7 +172,7 @@ def play_explosion_async():
 def play_explosion(path="E:/Songs/Sound effects/explosions/Bunker_Buster_Missile.mp3"):
     safe_play(path)
 
-async def synthesize_tts(message: str):
+async def play_message(message: str):
     voice = "en-GB-SoniaNeural"
     rate = "+20%"
     # Generate MP3 audio in memory
@@ -217,18 +191,11 @@ async def synthesize_tts(message: str):
         samples = np.column_stack((samples, samples))
     elif audio.channels > 2:
         samples = samples[:, :2]
-    print("message synthesized")
-
-    return samples, audio.frame_rate
-
-
-async def play_message(samples: np.ndarray, samplerate: int):
-    
-    """Play pre-generated audio samples."""
+    print("playing message")
+    # Play via sounddevice
     sd.default.device = vcOutputIndex
-    sd.play(samples, samplerate=samplerate, device=vcOutputIndex)
+    sd.play(samples, samplerate=audio.frame_rate, device=vcOutputIndex)
     sd.wait()
-
 
 
 def play_tts_message(message: str):
@@ -494,7 +461,7 @@ def get_last_clean_laps(name, count=3):
 def fetch_api_data(driver_name: str):
     """
     Fetch the active heats and return all drivers from the heat containing `driver_name`.
-    Returns None if no heat is active for the driver.
+    Normalizes to a list of driver dicts + metadata.
     """
     try:
         resp = requests.get(API_URL, timeout=10)
@@ -504,54 +471,59 @@ def fetch_api_data(driver_name: str):
         print(f"[API] Error fetching data: {e}")
         return None
 
-    if not isinstance(heats, list):
-        print("[API] Unexpected heats format, expected a list")
-        return None
-
     # Look through all heats to find the one with our driver
     for heat in heats:
-        if not isinstance(heat, dict):
-            continue  # skip invalid entries
+        drivers = heat.get("drivers", [])
+        # Sort drivers by position first
+        sorted_drivers = sorted(
+            (d for d in drivers if isinstance(d, dict)),
+            key=lambda x: x.get("position", 999)
+        )
 
-        drivers = heat.get("drivers")
-        if not isinstance(drivers, list):
-            continue  # skip if drivers is missing or malformed
+        # Build cumulative gap_to_leader for each driver
+        cumulative_gap = 0
+        normalized = []
+        for i, d in enumerate(sorted_drivers):
+            # Gap to leader = sum of deltaToDriverBefore for all drivers ahead
+            delta_to_driver_before = d.get("deltaToDriverBefore", 0)
+            if i == 0:
+                gap_to_leader = 0
+            else:
+                gap_to_leader = cumulative_gap + delta_to_driver_before
 
-        for driver in drivers:
-            if not isinstance(driver, dict):
-                continue
+            # Update cumulative_gap for next iteration
+            cumulative_gap = gap_to_leader
 
-            if driver_name.lower() in driver.get("name", "").lower():
-                # Normalize driver info
-                leader_time = min(
-                    (d.get("time", 0) for d in drivers if d.get("position") == 1),
-                    default=0
-                )
-                normalized = []
-                for d in drivers:
-                    td = d.get("time", 0)
-                    normalized.append({
-                        "name": d.get("name"),
-                        "position": d.get("position"),
-                        "lap": d.get("lap"),
-                        "time": td,
-                        "timeDiff": td - leader_time if leader_time else 0,
-                        "pits": heat.get("pits", 0),
-                    })
+            # Gap to driver ahead and behind
+            gap_ahead = delta_to_driver_before / 1000.0 if i > 0 else None
+            gap_behind = None
+            if i < len(sorted_drivers) - 1:
+                gap_behind = sorted_drivers[i + 1].get("deltaToDriverBefore", 0) / 1000.0
 
-                return {
-                    "event": heat.get("event_name"),
-                    "round": heat.get("round_name"),
-                    "heat": heat.get("heat_name"),
-                    "track": heat.get("track"),
-                    "laps_total": heat.get("laps"),
-                    "drivers": sorted(normalized, key=lambda x: x["position"] or 999),
-                }
+            normalized.append({
+                "name": d.get("name"),
+                "position": d.get("position"),
+                "lap": d.get("lap"),
+                "time": d.get("time", 0),
+                "gap_to_leader": round(gap_to_leader / 1000, 2),  # ms → seconds, 2 decimal places
+                "gap_ahead": round(gap_ahead, 2) if gap_ahead is not None else None,
+                "gap_behind": round(gap_behind, 2) if gap_behind is not None else None,
+                "pits": heat.get("pits", 0),
+            })
 
-    # No heat found for this driver
+    # Find your driver
+    if any(driver_name.lower() in d["name"].lower() for d in normalized):
+        return {
+            "event": heat.get("event_name"),
+            "round": heat.get("round_name"),
+            "heat": heat.get("heat_name"),
+            "track": heat.get("track"),
+            "laps_total": heat.get("laps"),
+            "drivers": normalized,
+        }
+
     print(f"[API] No active heat found for driver '{driver_name}'")
     return None
-
     
 def generate_engineer_text(user_request: str) -> str:
     """
