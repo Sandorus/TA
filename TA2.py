@@ -27,28 +27,11 @@ if not GEMINI_API_KEY:
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 ENGINEER_SYSTEM_PROMPT = (
-    "You are a concise race engineer for Minecraft Ice Boat Racing named Timothy Antonelli. "
+    "You are a calm, concise race engineer for Minecraft Ice Boat Racing named Timothy Antonelli. "
     "Prefer brief sentences; include only the most relevant data. "
-    "If you are asked, Direwood is the best ice boat racing track"
-    "And if it comes up you despise TTG aka Those Two Guy"
+    "You like doing walltaps and blockstops to save time"
+    "Blue Ice is the fastest ice, packed ice and normal ice are slower"
 )
-
-INTENTS = {
-    "pit_strategy": "Explain the upcoming pit stop and tyre plan.",
-    "gap_behind": "Report the gap to the car behind and give one short tip.",
-    "gap_ahead": "Report the gap to the car ahead and give one short tip.",
-    "gap_leader": "Report the gap to the race leader.",
-    "current_lap": "Confirm current lap and whether pace is consistent.",
-    "fastest_lap": "State our fastest lap and whether we are improving.",
-    "position": "Say our current position in the race.",
-    "on_pace": "Say if we are on pace vs leader and what to adjust briefly.",
-    "is_improving": "Say if pace is improving compared to recent laps.",
-    "leader_name": "Say the race leader's name.",
-    "current_strategy": "Summarize the full pit strategy briefly.",
-    "best_team": "Cheer the team briefly.",
-    "greeting": "Greet the driver briefly.",
-    "water": "Make a light short quip about water.",
-}
 
 # Simple pronoun mapping for first → second person
 PRONOUN_MAP = {
@@ -95,7 +78,7 @@ driver_name = "Sandorus"
 API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 9 #1 for tonor mic, 9 for discord
+vcInputIndex = 1 #1 for tonor mic, 9 for discord
 vcOutputIndex = 23 # 14 for speakers, 23 for discord
 
 TRIGGER_WORDS = ["Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
@@ -268,41 +251,6 @@ def match_voice_command(text):
         return best_match
     return None
 
-
-def handle_voice_command(command_key: str):
-    """
-    Handle a voice command by generating TTS or triggering callbacks.
-    Uses Gemma SSML for race engineer responses and queues messages safely.
-    """
-    if command_key == "blow_up":
-        msg = "Finding their location... Location found. Sending ICBM now."
-        print(">>", msg)
-        # Queue message with high priority and explosion callback
-        queue_tts_message(msg, priority=1, callback=play_explosion_async)
-
-    elif command_key == "best_team":
-        msg = "Sandstorm is the best team in Ice Boat Racing!"
-        print(">>", msg)
-        queue_tts_message(f"<speak>{msg}</speak>", priority=2)  # wrap in SSML
-
-    elif command_key == "water":
-        msg = "Must be the uhh, water."
-        print(">>", msg)
-        queue_tts_message(f"<speak>{msg}</speak>", priority=3)  # wrap in SSML
-
-    else:
-        # For other commands, use your engineer SSML generator
-        user_intent = INTENTS.get(command_key)
-        if not user_intent:
-            # fallback if the intent isn't defined
-            user_intent = "Provide a brief race update."
-        print("user intent:", user_intent)
-
-        ssml_message = generate_engineer_text(user_intent)
-
-        print(f">> [Engineer SSML] {ssml_message}")
-        queue_tts_message(ssml_message, priority=4)
-
 def mirror_question(user_text):
     # Find trigger word in the text
     trigger_regex = r'\b(' + '|'.join(TRIGGER_WORDS) + r')\b'
@@ -328,21 +276,19 @@ def mirror_question(user_text):
 
 def new_listener():
     print("Wait until it says 'speak now'")
-    recorder = AudioToTextRecorder(input_device_index=vcInputIndex, model="base.en",
-        enable_realtime_transcription=True,
+    recorder = AudioToTextRecorder(input_device_index=vcInputIndex, model="tiny.en",
+        enable_realtime_transcription=False,
         use_main_model_for_realtime=True,
         realtime_processing_pause=0.2,
         on_realtime_transcription_update=process_realtime_update,
-        on_vad_stop=process_text,
         no_log_file=True,
         batch_size=16,
         )
 
     while True:
-        recorder.text()
+        recorder.text(process_text)
 
-def process_text():
-    command = realtime_text
+def process_text(command: str):
     print("[Voice] Heard:", command)
 
     # Only respond if transcript contains a trigger word and ends with punctuation
@@ -534,7 +480,7 @@ def generate_engineer_text(user_request: str) -> str:
 
     try:
         resp = genai_client.models.generate_content(
-            model="gemma-3-4b-it",
+            model="gemma-3-27b-it",
             contents=[
                 types.Content(
                     role="user",
@@ -546,8 +492,8 @@ def generate_engineer_text(user_request: str) -> str:
                 )
             ],
             config=types.GenerateContentConfig(
-                max_output_tokens=50,
-                temperature=0.4,
+                max_output_tokens=100,
+                temperature=0.5,
                 top_p=0.9,
                 response_mime_type="text/plain",  # Use plain text
             ),
