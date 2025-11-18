@@ -126,6 +126,15 @@ def parse_lap_time(lap_str):
             return seconds + milliseconds / 1000
     return None
 
+def format_lap_time(sec: float) -> str:
+    if sec is None:
+        return "n/a"
+    minutes = int(sec // 60)
+    seconds = int(sec % 60)
+    milliseconds = int(round((sec - int(sec)) * 1000))
+    return f"{minutes}:{seconds:02d}.{milliseconds:03d}"
+
+
 def parse_timestamp(log_line):
     match = re.match(r"\[(\d{2}:\d{2}:\d{2})\]", log_line)
     if match:
@@ -547,7 +556,7 @@ def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_lap
     next_pit_str = f"lap {next_pit} ({next_compound})" if next_pit else "none"
 
     # Fastest lap (assuming you track it globally)
-    fl = f"{fastest_lap:.3f}s" if fastest_lap else "n/a"
+    fl = format_lap_time(fastest_lap) if fastest_lap else "n/a"
 
     lines = [
         f"Event: {data['event']} ({data['round']} / {data['heat']})",
