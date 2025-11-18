@@ -70,9 +70,6 @@ def tts_worker():
         else:
             time.sleep(0.01)  # Avoid tight spinning
 
-
-
-
 # === Config ===
 driver_name = "Sandorus"
 API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
@@ -94,6 +91,12 @@ previous_pit_counts = defaultdict(int)
 pit_laps_map = defaultdict(list)
 
 drivers = defaultdict(lambda: {"laps": {}, "lap_times": []})
+
+# === MEMORY SYSTEM ===
+MEMORY_LIMIT = 5
+memory_recent = []
+memory_summary = ""
+memory_lock = threading.Lock()
 
 # === PIT STRATEGY ===
 pit_strategy = [("Soft", 30), ("Hard", 33), ("Soft", 40)]
@@ -326,6 +329,10 @@ def handle_llm_and_tts(command: str):
     text = generate_engineer_text(command)
     print(f">> [Engineer text] {text}")
 
+    # Add to memory
+    add_memory(command, text)
+
+
     # Split text into chunks at punctuation (. ?)
     chunks = re.split(r'([.?])', text)
     
@@ -486,6 +493,13 @@ def generate_engineer_text(user_request: str) -> str:
     Uses plain text response and wraps it in <speak> tags.
     """
     state = build_race_state_summary(driver_name)
+    memory_section = f"""
+        Long-term memory:
+        {memory_summary if memory_summary else "None"}
+
+        Recent interactions:
+        {json.dumps(memory_recent, indent=2) if memory_recent else "None"}
+        """
 
     try:
         resp = genai_client.models.generate_content(
@@ -495,7 +509,7 @@ def generate_engineer_text(user_request: str) -> str:
                     role="user",
                     parts=[
                         types.Part.from_text(
-                            text=f"Context:\n{ENGINEER_SYSTEM_PROMPT}\n{state}\n\nRequest:\n{user_request}"
+                            text=f"Context:\n{ENGINEER_SYSTEM_PROMPT}\n{state}\n{memory_section}\n\nRequest:\n{user_request}"
                         )
                     ]
                 )
@@ -519,8 +533,64 @@ def generate_engineer_text(user_request: str) -> str:
     except Exception as e:
         # fallback for errors
         return f"Radio error. {str(e)}"
+    
+def add_memory(user_text: str, assistant_text: str):
+    global memory_recent, memory_summary
+
+    with memory_lock:
+        memory_recent.append({
+            "user": user_text,
+            "assistant": assistant_text
+        })
+
+        # If too long → summarize oldest interaction into long-term summary
+        if len(memory_recent) > MEMORY_LIMIT:
+            oldest = memory_recent.pop(0)
+
+            summary_text = f"""
+Existing summary:
+{memory_summary}
+
+New interaction to summarize:
+User: {oldest['user']}
+Assistant: {oldest['assistant']}
+
+Task:
+Rewrite the memory summary so it includes the essential information 
+from the new interaction, removing redundancy while keeping key context.
+"""
+
+            try:
+                result = genai_client.models.generate_content(
+                    model="gemma-3-27b-it",
+                    contents=[types.Content(parts=[types.Part.from_text(summary_text)])],
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=200,
+                        temperature=0.3,
+                    )
+                )
+                memory_summary = result.text.strip()
+            except Exception as e:
+                print(f"[Memory] Error summarizing memory: {e}")
+
 
 def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_laps_count: int = 3) -> str:
+    def format_driver_list(drivers):
+        lines = ["Drivers:"]
+        for d in drivers:
+            name = d["name"]
+            pos = d["position"]
+            lap = d["lap"]
+            pits = d.get("pits", 0)
+
+            # This already exists in your normalized structure
+            gap = d.get("gap_ahead")
+            gap_str = f"{gap:.3f}s" if gap is not None else "0.000s"
+
+            lines.append(f"{pos}. {name} | Lap {lap} | Gap to car ahead: {gap_str} | Pits: {pits}")
+
+        return "\n".join(lines)
+
     data = fetch_api_data(driver_name)
     if not data:
         return f"No race data available for {driver_name}."
@@ -558,6 +628,9 @@ def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_lap
     # Fastest lap (assuming you track it globally)
     fl = format_lap_time(fastest_lap) if fastest_lap else "n/a"
 
+    driver_list_str = format_driver_list(data["drivers"])
+
+
     lines = [
         f"Event: {data['event']} ({data['round']} / {data['heat']})",
         f"Track: {data['track']} | Total laps: {data['laps_total']}",
@@ -566,10 +639,8 @@ def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_lap
         f"Fastest lap: {fl}",
         f"Last clean laps ({clean_laps_count}): {last_clean_str}",
         f"Next scheduled pit: {next_pit_str}",
-        "Top order:",
-        *table,
-        f"Gap ahead: {gap_ahead:.3f}s" if gap_ahead is not None else "Gap ahead: n/a",
-        f"Gap behind: {gap_behind:.3f}s" if gap_behind is not None else "Gap behind: n/a",
+        "",
+        driver_list_str
     ]
     return "\n".join(lines)
 
