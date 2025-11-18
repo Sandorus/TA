@@ -33,6 +33,7 @@ ENGINEER_SYSTEM_PROMPT = (
     #"Blue Ice is the fastest ice, packed ice and normal ice are slower"
 )
 
+
 # Simple pronoun mapping for first → second person
 PRONOUN_MAP = {
     "I": "you",
@@ -75,8 +76,8 @@ driver_name = "Sandorus"
 API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 1 #1 for tonor mic, 9 for discord
-vcOutputIndex = 14 # 14 for speakers, 23 for discord
+vcInputIndex = 9 #1 for tonor mic, 9 for discord
+vcOutputIndex = 25 # 14 for speakers, 23 for discord, 25 for Voicemeeter
 
 TRIGGER_WORDS = ["Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -284,20 +285,17 @@ def process_text(command: str):
 
 
 def handle_llm_and_tts(command: str):
-    # Generate text response (Gemma)
+# Generate text response (Gemma)
     text = generate_engineer_text(command)
     print(f">> [Engineer text] {text}")
 
     # Add to memory
     add_memory(command, text)
 
-    queue_tts_message(text, priority=3)
+    # Split text into chunks only when . or ? is followed by a space or end of string
+    # This avoids splitting decimals like 1.233
+    chunks = re.split(r'([.?])(?=\s|$)', text)
 
-    #old version splitting at punctuation
-"""
-    # Split text into chunks at punctuation (. ?)
-    chunks = re.split(r'([.?])', text)
-    
     # Recombine punctuation with preceding text
     messages = []
     i = 0
@@ -315,14 +313,11 @@ def handle_llm_and_tts(command: str):
 
     # Queue the messages: first chunk priority=3, then increasing priority for each subsequent message
     base_priority = 3
-    increment = 1  # or whatever step you want
+    increment = 1
 
     for idx, msg in enumerate(messages):
-        if idx == 0:
-            priority = base_priority
-        else:
-            priority = base_priority + idx * increment
-        queue_tts_message(msg, priority=priority)"""
+        priority = base_priority + idx * increment
+        queue_tts_message(msg, priority=priority)
     
     
 
@@ -531,74 +526,56 @@ def add_memory(user_text: str, assistant_text: str):
 
 
 def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_laps_count: int = 3) -> str:
-    def format_driver_list(drivers):
-        lines = ["Drivers:"]
-        for d in drivers:
-            name = d["name"]
-            pos = d["position"]
-            lap = d["lap"]
-            pits = d.get("pits", 0)
+    try:
+        data = fetch_api_data(driver_name)
+        if not data:
+            return f"No race data available for {driver_name}."
 
-            # This already exists in your normalized structure
-            gap = d.get("gap_ahead")
-            gap_str = f"{gap:.3f}s" if gap is not None else "0.000s"
+        drivers = data["drivers"]
+        if not isinstance(drivers, list):
+            return f"No race data available for {driver_name}."
 
-            lines.append(f"{pos}. {name} | Lap {lap} | Gap to car ahead: {gap_str} | Pits: {pits}")
+        def format_driver_list(drivers):
+            lines = ["Drivers:"]
+            for d in drivers:
+                try:
+                    name = d["name"]
+                    pos = d["position"]
+                    lap = d["lap"]
+                    pits = d.get("pits", 0)
+                    gap = d.get("gap_ahead")
+                    gap_str = f"{gap:.3f}s" if gap is not None else "0.000s"
+                    lines.append(f"{pos}. {name} | Lap {lap} | Gap to car ahead: {gap_str} | Pits: {pits}")
+                except Exception:
+                    lines.append(f"{d.get('name', 'Unknown')} | Data unavailable")
+            return "\n".join(lines)
 
+        driver_list_str = format_driver_list(drivers)
+
+        # Next scheduled pit
+        next_pit = next((lap for lap, _ in pit_laps if lap >= current_lap), None)
+        next_compound = next((c for l, c in pit_laps if l == next_pit), None) if next_pit else None
+        next_pit_str = f"lap {next_pit} ({next_compound})" if next_pit else "none"
+
+        # Fastest lap
+        fl = format_lap_time(fastest_lap) if fastest_lap else "n/a"
+
+        lines = [
+            f"Event: {data.get('event', 'n/a')} ({data.get('round', 'n/a')} / {data.get('heat', 'n/a')})",
+            f"Track: {data.get('track', 'n/a')} | Total laps: {data.get('laps_total', 'n/a')}",
+            f"Driver: {driver_name}",
+            f"Current lap: {current_lap}",
+            f"Fastest lap: {fl}",
+            f"Next scheduled pit: {next_pit_str}",
+            "",
+            driver_list_str
+        ]
         return "\n".join(lines)
 
-    data = fetch_api_data(driver_name)
-    if not data:
+    except Exception as e:
+        print(f"[Race Summary] Error building race state: {e}")
         return f"No race data available for {driver_name}."
 
-    drivers = data["drivers"]
-    names = [d["name"] for d in drivers]
-    you_ix = names.index(driver_name) if driver_name in names else -1
-
-    # Top N order
-    table = []
-    for i, d in enumerate(drivers[:max_positions], start=1):
-        nm = d["name"]
-        g2l = d.get("gap_to_leader", 0)
-        pits = d.get("pits", 0)
-        table.append(f"{i}. {nm} (Δ{g2l:.2f}s to leader, pits:{pits})")
-
-    # Gaps for the selected driver
-    gap_ahead = None
-    gap_behind = None
-    if you_ix >= 0:
-        you = drivers[you_ix]
-        gap_ahead = you.get("gap_ahead")       # already in seconds
-        gap_behind = you.get("gap_behind")
-
-
-    # Your laps (placeholder – depends on your lap logging system)
-    last_clean = get_last_clean_laps(driver_name, count=clean_laps_count) or []
-    last_clean_str = ", ".join(f"{t:.3f}s" for t in last_clean) if last_clean else "n/a"
-
-    # Next scheduled pit (assuming you have pit_laps + current_lap globals)
-    next_pit = next((lap for lap, _ in pit_laps if lap >= current_lap), None)
-    next_compound = next((c for l, c in pit_laps if l == next_pit), None) if next_pit else None
-    next_pit_str = f"lap {next_pit} ({next_compound})" if next_pit else "none"
-
-    # Fastest lap (assuming you track it globally)
-    fl = format_lap_time(fastest_lap) if fastest_lap else "n/a"
-
-    driver_list_str = format_driver_list(data["drivers"])
-
-
-    lines = [
-        f"Event: {data['event']} ({data['round']} / {data['heat']})",
-        f"Track: {data['track']} | Total laps: {data['laps_total']}",
-        f"Driver: {driver_name}",
-        f"Current lap: {current_lap}",
-        f"Fastest lap: {fl}",
-        f"Last clean laps ({clean_laps_count}): {last_clean_str}",
-        f"Next scheduled pit: {next_pit_str}",
-        "",
-        driver_list_str
-    ]
-    return "\n".join(lines)
 
     
 def main_loop():
