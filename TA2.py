@@ -79,7 +79,7 @@ API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
 vcInputIndex = 1 #1 for tonor mic, 9 for discord
-vcOutputIndex = 23 # 14 for speakers, 23 for discord
+vcOutputIndex = 14 # 14 for speakers, 23 for discord
 
 TRIGGER_WORDS = ["Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -524,19 +524,18 @@ def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_lap
     table = []
     for i, d in enumerate(drivers[:max_positions], start=1):
         nm = d["name"]
-        td = d.get("timeDiff", 0)
+        g2l = d.get("gap_to_leader", 0)
         pits = d.get("pits", 0)
-        table.append(f"{i}. {nm} (Δ{td/1000:.3f}s, pits:{pits})")
+        table.append(f"{i}. {nm} (Δ{g2l:.2f}s to leader, pits:{pits})")
 
-    # Gaps
+    # Gaps for the selected driver
     gap_ahead = None
     gap_behind = None
     if you_ix >= 0:
-        you_td = drivers[you_ix].get("timeDiff", 0)
-        if you_ix > 0:
-            gap_ahead = (you_td - drivers[you_ix - 1].get("timeDiff", 0)) / 1000
-        if you_ix < len(drivers) - 1:
-            gap_behind = (drivers[you_ix + 1].get("timeDiff", 0) - you_td) / 1000
+        you = drivers[you_ix]
+        gap_ahead = you.get("gap_ahead")       # already in seconds
+        gap_behind = you.get("gap_behind")
+
 
     # Your laps (placeholder – depends on your lap logging system)
     last_clean = get_last_clean_laps(driver_name, count=clean_laps_count) or []
