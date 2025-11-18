@@ -29,8 +29,8 @@ genai_client = genai.Client(api_key=GEMINI_API_KEY)
 ENGINEER_SYSTEM_PROMPT = (
     "You are a calm, concise race engineer for Minecraft Ice Boat Racing named Timothy Antonelli. "
     "Prefer brief sentences; include only the most relevant data. "
-    "You like doing walltaps and blockstops to save time"
-    "Blue Ice is the fastest ice, packed ice and normal ice are slower"
+    #"You like doing walltaps and blockstops to save time"
+    #"Blue Ice is the fastest ice, packed ice and normal ice are slower"
 )
 
 # Simple pronoun mapping for first → second person
@@ -160,13 +160,6 @@ def get_current_positions(drivers_dict=None):
         positions.append((name, time_diff, lap_count))
     return positions
 
-
-def play_explosion_async():
-    threading.Thread(target=play_explosion, daemon=True).start()
-
-def play_explosion(path="E:/Songs/Sound effects/explosions/Bunker_Buster_Missile.mp3"):
-    safe_play(path)
-
 async def play_message(message: str):
     voice = "en-GB-SoniaNeural"
     rate = "+20%"
@@ -223,45 +216,11 @@ def play_notification_sound(path="E:/Songs/Sound effects/F1_Radio_-_Notification
 
     threading.Thread(target=_play, daemon=True).start()
 
-
-def safe_play(path):
-    """
-    Safely play audio files through VB-Audio Virtual Cable (stereo enforced).
-    """
-    data, fs = sf.read(path)
-
-    # Ensure 2D array for sounddevice
-    if data.ndim == 1:
-        data = np.column_stack((data, data))  # Mono → Stereo
-    elif data.shape[1] == 1:
-        data = np.repeat(data, 2, axis=1)     # Single channel → Stereo
-    elif data.shape[1] > 2:
-        data = data[:, :2]                    # Truncate to 2 channels
-
-      
-    sd.default.device = vcOutputIndex
-    sd.play(data, fs, device=vcOutputIndex)
-    sd.wait()
-
 # Updated queue_tts_message to include optional callback
 def queue_tts_message(message, priority=5, callback=None):
     with tts_lock:
         heapq.heappush(tts_queue, (priority, message, callback))
 
-def match_voice_command(text):
-    best_match = None
-    best_score = 0
-
-    for command_key, phrases in command_phrases.items():
-        for phrase in phrases:
-            score = fuzz.partial_ratio(text.lower(), phrase.lower())
-            if score > best_score:
-                best_score = score
-                best_match = command_key
-
-    if best_score > 80:  # lowered threshold for partial matches
-        return best_match
-    return None
 
 def mirror_question(user_text):
     # Find trigger word in the text
@@ -489,17 +448,16 @@ def fetch_api_data(driver_name: str):
     
 def generate_engineer_text(user_request: str) -> str:
     """
-    Generates SSML for TTS using Gemini (Gemma model).
-    Uses plain text response and wraps it in <speak> tags.
+    Generates text for TTS using Gemini (Gemma model).
+    Uses plain text response format for easier TTS processing.
     """
     state = build_race_state_summary(driver_name)
-    memory_section = f"""
-        Long-term memory:
-        {memory_summary if memory_summary else "None"}
+    memory_section = f"""Long-term memory:
+    {memory_summary if memory_summary else "None"}
 
-        Recent interactions:
-        {json.dumps(memory_recent, indent=2) if memory_recent else "None"}
-        """
+    Recent interactions:
+    {json.dumps(memory_recent, indent=2) if memory_recent else "None"}
+    """
 
     try:
         resp = genai_client.models.generate_content(
@@ -547,31 +505,26 @@ def add_memory(user_text: str, assistant_text: str):
         if len(memory_recent) > MEMORY_LIMIT:
             oldest = memory_recent.pop(0)
 
-            summary_text = f"""
-Existing summary:
-{memory_summary}
-
-New interaction to summarize:
-User: {oldest['user']}
-Assistant: {oldest['assistant']}
-
-Task:
-Rewrite the memory summary so it includes the essential information 
-from the new interaction, removing redundancy while keeping key context.
-"""
+            summary_text = (
+    f"Existing summary:\n{memory_summary if memory_summary else ''}\n\n"
+    f"New interaction:\nUser: {oldest['user']}\nAssistant: {oldest['assistant']}\n\n"
+    "Task:\nRewrite the memory summary including essential info and remove redundancy."
+)
 
             try:
                 result = genai_client.models.generate_content(
                     model="gemma-3-27b-it",
-                    contents=[types.Content(parts=[types.Part.from_text(summary_text)])],
+                    contents=[types.Content(parts=[types.Part.from_text(text = summary_text)])],
                     config=types.GenerateContentConfig(
                         max_output_tokens=200,
                         temperature=0.3,
                     )
                 )
-                memory_summary = result.text.strip()
+                memory_summary = (getattr(result, "text", "") or "").strip()
+
             except Exception as e:
                 print(f"[Memory] Error summarizing memory: {e}")
+
 
 
 def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_laps_count: int = 3) -> str:
