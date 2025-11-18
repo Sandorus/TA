@@ -291,7 +291,10 @@ def handle_llm_and_tts(command: str):
     # Add to memory
     add_memory(command, text)
 
+    queue_tts_message(text, priority=3)
 
+    #old version splitting at punctuation
+"""
     # Split text into chunks at punctuation (. ?)
     chunks = re.split(r'([.?])', text)
     
@@ -319,8 +322,8 @@ def handle_llm_and_tts(command: str):
             priority = base_priority
         else:
             priority = base_priority + idx * increment
-        queue_tts_message(msg, priority=priority)
-
+        queue_tts_message(msg, priority=priority)"""
+    
     
 
 def process_realtime_update(text: str):
