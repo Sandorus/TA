@@ -19,6 +19,13 @@ from google import genai
 from google.genai import types
 from pydub import AudioSegment
 import io
+import sqlite3
+from rapidfuzz import process
+
+# === DATABASE SETUP ===
+DB_PATH = os.path.join("Data", "boatlabs.db")
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
@@ -72,12 +79,12 @@ def tts_worker():
             time.sleep(0.01)  # Avoid tight spinning
 
 # === Config ===
-driver_name = "Sandorus"
+user_name = "Sandorus"
 API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 9 #1 for tonor mic, 9 for discord
-vcOutputIndex = 25 # 14 for speakers, 23 for discord, 25 for Voicemeeter
+vcInputIndex = 1 #1 for tonor mic, 9 for discord
+vcOutputIndex = 14 # 14 for speakers, 23 for discord, 25 for Voicemeeter
 
 TRIGGER_WORDS = ["Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -106,6 +113,22 @@ lap_counter = 0
 for compound, duration in pit_strategy:
     lap_counter += duration
     pit_laps.append((lap_counter, compound))
+
+# === TOOL DEFINITIONS ===
+tool_instructions = """
+You have access to the following tool:
+
+1. get_driver_pace(driver_name, track_name)
+   - Returns the average pace (fastest 30% non-pit laps)
+   - Input JSON:
+      {"tool": "get_driver_pace", "driver_name": "...", "track_name": "..."}
+
+When you want to call the tool, output ONLY valid JSON:
+{"tool": "get_driver_pace", "driver_name": "...", "track_name": "..."}
+
+If no tool is needed, respond normally.
+"""
+
 
 def find_device_index(device_name):
     devices = sd.query_devices()
@@ -146,7 +169,7 @@ def parse_timestamp(log_line):
     return None
 
 def get_current_positions(drivers_dict=None):
-    api_data = fetch_api_data(driver_name)
+    api_data = fetch_api_data(user_name)
     if not api_data:
         return []
 
@@ -261,7 +284,7 @@ def new_listener():
         recorder.text(process_text)
 
 def process_text(command: str):
-    print("[Voice] Heard:", command)
+    #print("[Voice] Heard:", command)
 
     # Only respond if transcript contains a trigger word and ends with punctuation
     if not any(trigger.lower() in command.lower() for trigger in TRIGGER_WORDS):
@@ -269,8 +292,18 @@ def process_text(command: str):
     if not command:
         return
     
+    driver_name = resolve_driver_name(conn, command)
+    track_name = resolve_track_name(conn, command)
+
+    clean_command = f"""
+    Original STT: '{command}'
+    Resolved driver: {driver_name}
+    Resolved track: {track_name}
+    """
+
+    print("[Voice] Heard:", clean_command)
     # Run the LLM + TTS in a separate thread
-    threading.Thread(target=handle_llm_and_tts, args=(command,), daemon=True).start()
+    threading.Thread(target=handle_llm_and_tts, args=(clean_command,), daemon=True).start()
 
     # Pre-response filler
     if command.strip().endswith("?"):
@@ -326,8 +359,8 @@ def process_realtime_update(text: str):
     realtime_text = text
 
 
-def is_improving(driver_name):
-    clean_laps = get_last_clean_laps(driver_name)
+def is_improving(user_name):
+    clean_laps = get_last_clean_laps(user_name)
     if not clean_laps or len(clean_laps) < 5:
         # Not enough data to compare reliably
         return "Not enough clean lap data to determine improvement."
@@ -377,9 +410,9 @@ def get_last_clean_laps(name, count=3):
                 clean_laps = [t for i, t in enumerate(all_laps, 1) if i not in pit_laps]
                 return clean_laps[-count:] if len(clean_laps) >= count else None
 
-def fetch_api_data(driver_name: str):
+def fetch_api_data(user_name: str):
     """
-    Fetch the active heats and return all drivers from the heat containing `driver_name`.
+    Fetch the active heats and return all drivers from the heat containing `user_name`.
     Normalizes to a list of driver dicts + metadata.
     """
     try:
@@ -431,7 +464,7 @@ def fetch_api_data(driver_name: str):
             })
 
     # Find your driver
-    if any(driver_name.lower() in d["name"].lower() for d in normalized):
+    if any(user_name.lower() in d["name"].lower() for d in normalized):
         return {
             "event": heat.get("event_name"),
             "round": heat.get("round_name"),
@@ -441,15 +474,11 @@ def fetch_api_data(driver_name: str):
             "drivers": normalized,
         }
 
-    print(f"[API] No active heat found for driver '{driver_name}'")
+    print(f"[API] No active heat found for driver '{user_name}'")
     return None
     
 def generate_engineer_text(user_request: str) -> str:
-    """
-    Generates text for TTS using Gemini (Gemma model).
-    Uses plain text response format for easier TTS processing.
-    """
-    state = build_race_state_summary(driver_name)
+    state = build_race_state_summary(user_name)
     memory_section = f"""Long-term memory:
     {memory_summary if memory_summary else "None"}
 
@@ -458,37 +487,77 @@ def generate_engineer_text(user_request: str) -> str:
     """
 
     try:
+        # FIRST CALL — ask Gemma if tool needed
+        prompt = f"""
+{ENGINEER_SYSTEM_PROMPT}
+
+{tool_instructions}
+
+Race State:
+{state}
+
+Memory:
+{memory_section}
+
+User request:
+{user_request}
+
+If you want to call the tool, output ONLY JSON.
+Otherwise answer normally.
+"""
+
         resp = genai_client.models.generate_content(
             model="gemma-3-27b-it",
-            contents=[
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(
-                            text=f"Context:\n{ENGINEER_SYSTEM_PROMPT}\n{state}\n{memory_section}\n\nRequest:\n{user_request}"
-                        )
-                    ]
-                )
-            ],
+            contents=[prompt],
             config=types.GenerateContentConfig(
-                max_output_tokens=100,
+                max_output_tokens=200,
                 temperature=0.5,
                 top_p=0.9,
-                response_mime_type="text/plain",  # Use plain text
+                response_mime_type="text/plain"
             ),
         )
 
-        text = (resp.text or "").strip()
+        text = resp.text.strip()
 
-        # Basic manual validation: escape any forbidden chars
-        # Edge TTS requires & < > to be escaped in plain text
+        # Detect tool call
+        if text.startswith("{") and "\"tool\"" in text:
+            tool_call = json.loads(text)
+
+            if tool_call["tool"] == "get_driver_pace":
+                avg_ms = get_driver_pace(
+                    tool_call["driver_name"],
+                    tool_call["track_name"]
+                )
+                tool_result = {
+                    "driver_name": tool_call["driver_name"],
+                    "track_name": tool_call["track_name"],
+                    "average_ms": avg_ms
+                }
+
+                # SECOND CALL – give Gemma the tool result
+                followup = genai_client.models.generate_content(
+                    model="gemma-3-27b-it",
+                    contents=[
+                        f"Tool result:\n{json.dumps(tool_result)}\n\nNow produce the final answer."
+                    ],
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=150,
+                        temperature=0.4,
+                        response_mime_type="text/plain",
+                    ),
+                )
+
+                final_text = followup.text.strip()
+                final_text = final_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                return final_text
+
+        # NO TOOL NEEDED → return normal response
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
         return text
 
     except Exception as e:
-        # fallback for errors
         return f"Radio error. {str(e)}"
+
     
 def add_memory(user_text: str, assistant_text: str):
     global memory_recent, memory_summary
@@ -525,15 +594,15 @@ def add_memory(user_text: str, assistant_text: str):
 
 
 
-def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_laps_count: int = 3) -> str:
+def build_race_state_summary(user_name: str, max_positions: int = 5, clean_laps_count: int = 3) -> str:
     try:
-        data = fetch_api_data(driver_name)
+        data = fetch_api_data(user_name)
         if not data:
-            return f"No race data available for {driver_name}."
+            return f"No race data available for {user_name}."
 
         drivers = data["drivers"]
         if not isinstance(drivers, list):
-            return f"No race data available for {driver_name}."
+            return f"No race data available for {user_name}."
 
         def format_driver_list(drivers):
             lines = ["Drivers:"]
@@ -563,7 +632,7 @@ def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_lap
         lines = [
             f"Event: {data.get('event', 'n/a')} ({data.get('round', 'n/a')} / {data.get('heat', 'n/a')})",
             f"Track: {data.get('track', 'n/a')} | Total laps: {data.get('laps_total', 'n/a')}",
-            f"Driver: {driver_name}",
+            f"Driver: {user_name}",
             f"Current lap: {current_lap}",
             f"Fastest lap: {fl}",
             f"Next scheduled pit: {next_pit_str}",
@@ -574,15 +643,65 @@ def build_race_state_summary(driver_name: str, max_positions: int = 5, clean_lap
 
     except Exception as e:
         print(f"[Race Summary] Error building race state: {e}")
-        return f"No race data available for {driver_name}."
+        return f"No race data available for {user_name}."
+    
+# Tool implementation
+def get_driver_pace(conn, track_name: str, driver_name: str):
+    cursor = conn.cursor()
 
+    cursor.execute("""
+        SELECT laps.lap_time_ms
+        FROM laps
+        JOIN rounds ON laps.round_id = rounds.round_id
+        WHERE laps.driver_name = ?
+          AND rounds.track_name = ?
+          AND laps.pit_stop = 0
+          AND laps.lap_time_ms IS NOT NULL
+        ORDER BY laps.lap_time_ms ASC
+    """, (driver_name, track_name))
+
+    rows = [r[0] for r in cursor.fetchall()]
+
+    if not rows:
+        return None  # no laps found
+
+    # Take the fastest 30%
+    count = max(1, int(len(rows) * 0.30))
+    fastest_segment = rows[:count]
+
+    # Average them
+    avg_ms = sum(fastest_segment) / len(fastest_segment)
+    return avg_ms
+
+def resolve_driver_name(conn, spoken_name: str):
+    cursor = conn.cursor()
+    cursor.execute("SELECT driver_name FROM drivers")
+    driver_names = [row[0] for row in cursor.fetchall()]
+
+    best_match, score, _ = process.extractOne(spoken_name, driver_names)
+
+    if score < 70:  # tweak threshold as needed
+        return None
+
+    return best_match
+
+def resolve_track_name(conn, spoken: str):
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT track_name FROM events")
+    tracks = [t[0] for t in cursor.fetchall()]
+
+    best_match, score, _ = process.extractOne(spoken, tracks)
+    if score < 70:
+        return None
+
+    return best_match
 
     
 def main_loop():
     
     print("Race tracking started (via API)...")
     while True:
-        data = fetch_api_data(driver_name)
+        data = fetch_api_data(user_name)
 
         for entry in data:
             name = entry["name"]
@@ -645,17 +764,17 @@ def log_reader_loop():
             if match1:
                 print(f"[DEBUG] Matched own lap: {line.strip()}")
                 lap_time = parse_lap_time(match1.group(1))
-                name = driver_name
+                name = user_name
                 lap_num = len(drivers[name]["lap_times"]) + 1  # Increment lap count for yourself
                 line_handled = True
 
 
             # For own fastest lap announcement
-            match2 = re.search(rf"{driver_name} new fastest lap of ([\d:.]+)", line)
+            match2 = re.search(rf"{user_name} new fastest lap of ([\d:.]+)", line)
             if match2:
                 print(f"[DEBUG] Matched own fastest: {line.strip()}")
                 lap_time = parse_lap_time(match2.group(1))
-                name = driver_name
+                name = user_name
                 line_handled = True
 
             # For other drivers' fastest lap announcement
@@ -695,7 +814,7 @@ def log_reader_loop():
                 print(f"[DEBUG] Lap {lap_num} stored for {name} at {timestamp.strftime('%H:%M:%S')}")
 
                 # If this is your driver, update current_lap, fastest lap etc. as usual
-                if name == driver_name:
+                if name == user_name:
                     current_lap = lap_num
                     lap_times.append(lap_time)
                     if fastest_lap is None or lap_time < fastest_lap:
@@ -707,18 +826,18 @@ def log_reader_loop():
                             print(f">> {message}")
                             queue_tts_message(message, priority=1)
                             break
-
+                               
                     # === GAP/ORDER MESSAGES (using JSON API instead of timestamps) ===
-                    api_data = fetch_api_data(driver_name)
+                    api_data = fetch_api_data(user_name)
                     if not api_data:
                         continue  # skip this frame if API didn't return usable data
 
                     # The API returns the drivers in order already
                     position_names = [entry["name"] for entry in api_data]
 
-                    if driver_name in position_names:
-                        you_index = position_names.index(driver_name)
-                        you_time_diff = next((e["timeDiff"] for e in api_data if e["name"] == driver_name), None)
+                    if user_name in position_names:
+                        you_index = position_names.index(user_name)
+                        you_time_diff = next((e["timeDiff"] for e in api_data if e["name"] == user_name), None)
                         leader_time_diff = api_data[0]["timeDiff"]
 
                         if you_index > 0:
