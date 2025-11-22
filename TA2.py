@@ -292,13 +292,16 @@ def process_text(command: str):
     if not command:
         return
     
+     # Convert any "-" to "dash"
+    command = command.replace("-", "dash")
+
     driver_name = resolve_driver_name(conn, command)
     track_name = resolve_track_name(conn, command)
 
     clean_command = f"""
     Original STT: '{command}'
-    Resolved driver: {driver_name}
-    Resolved track: {track_name}
+    Resolved driver_name: {driver_name}
+    Resolved track_name: {track_name}
     """
 
     print("[Voice] Heard:", clean_command)
@@ -502,7 +505,7 @@ Memory:
 User request:
 {user_request}
 
-If you want to call the tool, output ONLY JSON.
+If you want to call the tool, output ONLY THE TOOL CALL IN JSON.
 Otherwise answer normally.
 """
 
@@ -519,37 +522,43 @@ Otherwise answer normally.
 
         text = resp.text.strip()
 
-        # Detect tool call
-        if text.startswith("{") and "\"tool\"" in text:
-            tool_call = json.loads(text)
+        # Try parsing tool call JSON
+        tool_call = None
+        try:
+            tool_call_candidate = text.strip()
+            tool_call = json.loads(tool_call_candidate)
+        except json.JSONDecodeError:
+            # No tool call detected, treat as normal text
+            return text
 
-            if tool_call["tool"] == "get_driver_pace":
-                avg_ms = get_driver_pace(
-                    tool_call["driver_name"],
-                    tool_call["track_name"]
-                )
-                tool_result = {
-                    "driver_name": tool_call["driver_name"],
-                    "track_name": tool_call["track_name"],
-                    "average_ms": avg_ms
-                }
+        # If we have a tool call
+        if tool_call and tool_call.get("tool") == "get_driver_pace":
+            avg_ms = get_driver_pace(
+            conn,  # pass your connection object here
+            tool_call["track_name"],
+            tool_call["driver_name"]
+            )
+            tool_result = {
+                "driver_name": tool_call["driver_name"],
+                "track_name": tool_call["track_name"],
+                "average_ms": avg_ms
+            }
 
-                # SECOND CALL – give Gemma the tool result
-                followup = genai_client.models.generate_content(
-                    model="gemma-3-27b-it",
-                    contents=[
-                        f"Tool result:\n{json.dumps(tool_result)}\n\nNow produce the final answer."
-                    ],
-                    config=types.GenerateContentConfig(
-                        max_output_tokens=150,
-                        temperature=0.4,
-                        response_mime_type="text/plain",
-                    ),
-                )
+            # SECOND CALL — give Gemma the tool result
+            followup_prompt = f"Tool result:\n{json.dumps(tool_result)}\n\nNow produce the final answer."
+            followup = genai_client.models.generate_content(
+                model="gemma-3-27b-it",
+                contents=[followup_prompt],
+                config=types.GenerateContentConfig(
+                    max_output_tokens=150,
+                    temperature=0.4,
+                    response_mime_type="text/plain",
+                ),
+            )
 
-                final_text = followup.text.strip()
-                final_text = final_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                return final_text
+            final_text = followup.text.strip()
+            final_text = final_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return final_text
 
         # NO TOOL NEEDED → return normal response
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -558,7 +567,6 @@ Otherwise answer normally.
     except Exception as e:
         return f"Radio error. {str(e)}"
 
-    
 def add_memory(user_text: str, assistant_text: str):
     global memory_recent, memory_summary
 
@@ -678,17 +686,29 @@ def resolve_driver_name(conn, spoken_name: str):
     cursor.execute("SELECT driver_name FROM drivers")
     driver_names = [row[0] for row in cursor.fetchall()]
 
-    best_match, score, _ = process.extractOne(spoken_name, driver_names)
+    # Remove "Timothy" from fuzzy matching
+    fuzzy_candidates = [name for name in driver_names if name.lower() != "timothy"]
 
-    if score < 70:  # tweak threshold as needed
+    # Exact match check (ignore "Timothy")
+    if spoken_name in fuzzy_candidates:
+        return spoken_name
+
+    # Fuzzy match against filtered list
+    best_match, score, _ = process.extractOne(spoken_name, fuzzy_candidates)
+    if score < 70:
         return None
 
     return best_match
+
 
 def resolve_track_name(conn, spoken: str):
     cursor = conn.cursor()
     cursor.execute("SELECT DISTINCT track_name FROM events")
     tracks = [t[0] for t in cursor.fetchall()]
+
+    # Exact match check
+    if spoken in tracks:
+        return spoken
 
     best_match, score, _ = process.extractOne(spoken, tracks)
     if score < 70:
