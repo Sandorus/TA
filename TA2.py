@@ -130,6 +130,12 @@ You have access to the following tools:
    - Input JSON:
       {"tool": "set_pit_delta", "value": NUMBER}
 
+3. get_pit_air()
+   - Computes who you will rejoin behind and ahead if you pit now.
+   - Uses pit_delta seconds.
+   - Output JSON:
+      {"tool": "get_pit_air"}
+
 If no tool is needed, respond normally.
 """
 
@@ -591,6 +597,9 @@ Otherwise answer normally.
             new_val = set_pit_delta(tool_call["value"])
             tool_result = {"new_value": new_val}
 
+        elif tool_call.get("tool") == "get_pit_air":
+            tool_result = get_pit_air()
+
         # If the tool was not recognized
         if tool_result is None:
             return "Radio error. Tool call not recognized."
@@ -767,6 +776,80 @@ def set_pit_delta(new_value: float):
     pit_delta = float(new_value)
     return pit_delta
 
+def get_pit_air():
+    """
+    Computes expected traffic after a pitstop.
+    Uses: pit_delta, fetch_api_data(), current user position.
+    Returns dict with fields:
+      - ahead_name
+      - ahead_gap
+      - behind_name
+      - behind_gap
+      - nearby_drivers: list of {"name": ..., "gap": ...}
+    """
+
+    data = fetch_api_data(user_name)
+    if not data:
+        return {"error": "no_api_data"}
+
+    drivers = data["drivers"]
+
+    # get user's current gap_to_leader
+    user = next((d for d in drivers if d["name"] == user_name), None)
+    if not user:
+        return {"error": "user_not_found"}
+
+    user_gap = user["gap_to_leader"]  # seconds from leader
+
+    # Pit exit gap:
+    # We ADD pit_delta → you “jump backward” in cumulative gap order
+    exit_gap = user_gap + pit_delta
+
+    # Determine which drivers match that gap
+    # Create sorted list by gap_to_leader
+    ordered = sorted(drivers, key=lambda x: x["gap_to_leader"])
+
+    # Find who you will slot between
+    ahead = None
+    behind = None
+
+    for i in range(len(ordered) - 1):
+        g1 = ordered[i]["gap_to_leader"]
+        g2 = ordered[i + 1]["gap_to_leader"]
+
+        if g1 <= exit_gap <= g2:
+            ahead = ordered[i + 1]   # driver in front after pit
+            behind = ordered[i]      # driver behind after pit
+            break
+
+    # If exit_gap is beyond everyone
+    if ahead is None:
+        ahead = ordered[-1]
+        behind = ordered[-2]
+
+    # Compute gaps relative to your pit-exit position
+    ahead_gap = ahead["gap_to_leader"] - exit_gap
+    behind_gap = exit_gap - behind["gap_to_leader"]
+
+    # Nearby traffic within ±5s
+    nearby = []
+    for d in ordered:
+        diff = abs(d["gap_to_leader"] - exit_gap)
+        if diff <= 5.0:
+            nearby.append({"name": d["name"], "gap": round(diff, 3)})
+
+    # Remove the user from nearby in case they appear
+    nearby = [d for d in nearby if d["name"] != user_name]
+
+    return {
+        "ahead_name": ahead["name"],
+        "ahead_gap": round(ahead_gap, 3),
+        "behind_name": behind["name"],
+        "behind_gap": round(behind_gap, 3),
+        "nearby_drivers": nearby,
+        "exit_gap": exit_gap,
+        "pit_delta": pit_delta
+    }
 
 def resolve_driver_name(conn, spoken_name: str):
     cursor = conn.cursor()
