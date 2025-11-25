@@ -288,28 +288,38 @@ def new_listener():
         recorder.text(process_text)
 
 def process_text(command: str):
-    # Only respond if transcript contains a trigger word and ends with punctuation
     if not any(trigger.lower() in command.lower() for trigger in TRIGGER_WORDS):
         print("[Voice] Heard:", command)
         return
+    
     if not command:
         return
-    
-     # Convert any "-" to "dash"
+
     command = command.replace("-", "dash")
+    original_command = command
 
-    driver_name = resolve_driver_name(conn, command)
-    track_name = resolve_track_name(conn, command)
+    driver_resolved, _ = resolve_driver_name(conn, command)
+    track_resolved, _ = resolve_track_name(conn, command)
 
-    clean_command = f"""
-    Original STT: '{command}'
-    Resolved driver_name: {driver_name}
-    Resolved track_name: {track_name}
-    """
+    # Build resolved info only if at least one match exists
+    resolved_info = ""
+
+    if driver_resolved or track_resolved:
+        resolved_info = "\nResolved:"
+        if driver_resolved:
+            resolved_info += f"\n  driver_name: {driver_resolved}"
+        if track_resolved:
+            resolved_info += f"\n  track_name: {track_resolved}"
+
+    clean_command = f"Original STT: '{original_command}'{resolved_info}"
 
     print("[Voice] Heard:", clean_command)
-    # Run the LLM + TTS in a separate thread
-    threading.Thread(target=handle_llm_and_tts, args=(clean_command,), daemon=True).start()
+
+    threading.Thread(
+        target=handle_llm_and_tts, 
+        args=(clean_command,), 
+        daemon=True
+    ).start()
 
     # Pre-response filler
     if command.strip().endswith("?"):
@@ -318,10 +328,16 @@ def process_text(command: str):
     else:
         msg = "Let me think, um"
         time.sleep(0.2)
+
     time.sleep(0.1)
-    queue_tts_message(msg, priority=3)  # filler message comes first
+    queue_tts_message(msg, priority=3)
     play_notification_sound()
 
+def replace_fragment(command: str, fragment: str, resolved: str):
+    if not fragment or not resolved:
+        return command
+    pattern = re.compile(re.escape(fragment), re.IGNORECASE)
+    return pattern.sub(resolved, command)
 
 def handle_llm_and_tts(command: str):
 # Generate text response (Gemma)
@@ -527,8 +543,18 @@ Otherwise answer normally.
 
         # Try to interpret the model output as a tool call
         # Try parsing tool call JSON
+        clean = extract_json(text)
+
+        if clean is None:
+            # No JSON → normal answer
+            safe_text = (
+                text.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+            )
+            return safe_text
+        
         try:
-            clean = strip_code_fences(text)
             tool_call = json.loads(clean)
         except json.JSONDecodeError:
             # No JSON → normal text response
@@ -604,18 +630,22 @@ Otherwise answer normally.
     except Exception as e:
         return f"Radio error. {str(e)}"
     
-def strip_code_fences(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        # Remove opening fence with possible language label
-        first_newline = text.find("\n")
-        if first_newline != -1:
-            text = text[first_newline+1:]
-    if text.endswith("```"):
-        text = text[:-3]
-    return text.strip()
+def extract_json(text: str) -> str | None:
+    """
+    Extracts the first {...} JSON object from the text.
+    Ignores any markdown code fences or unrelated output.
+    """
+    # Use a regex to find a JSON object
+    match = re.search(r'\{.*?\}', text, re.DOTALL)
+    if not match:
+        return None
 
+    candidate = match.group(0).strip()
 
+    # Optionally strip trailing backticks or similar garbage
+    candidate = candidate.rstrip('`').rstrip().strip()
+
+    return candidate
 
 def add_memory(user_text: str, assistant_text: str):
     global memory_recent, memory_summary
@@ -746,16 +776,17 @@ def resolve_driver_name(conn, spoken_name: str):
     # Remove "Timothy" from fuzzy matching
     fuzzy_candidates = [name for name in driver_names if name.lower() != "timothy"]
 
-    # Exact match check (ignore "Timothy")
-    if spoken_name in fuzzy_candidates:
-        return spoken_name
+    # Exact match check
+    for name in fuzzy_candidates:
+        if name.lower() in spoken_name.lower():
+            return name, name   # (resolved_name, matched_fragment)
 
-    # Fuzzy match against filtered list
+    # Fuzzy match on entire spoken text
     best_match, score, _ = process.extractOne(spoken_name, fuzzy_candidates)
     if score < 70:
-        return None
+        return None, None
 
-    return best_match
+    return best_match, best_match
 
 
 def resolve_track_name(conn, spoken: str):
@@ -764,16 +795,16 @@ def resolve_track_name(conn, spoken: str):
     tracks = [t[0] for t in cursor.fetchall()]
 
     # Exact match check
-    if spoken in tracks:
-        return spoken
+    for name in tracks:
+        if name.lower() in spoken.lower():
+            return name, name
 
     best_match, score, _ = process.extractOne(spoken, tracks)
     if score < 70:
-        return None
+        return None, None
 
-    return best_match
+    return best_match, best_match
 
-    
 def main_loop():
     
     print("Race tracking started (via API)...")
