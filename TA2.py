@@ -95,6 +95,8 @@ message = ""
 previous_data = {}
 realtime_text = ""
 
+pit_delta = 22.0   # default value
+
 previous_pit_counts = defaultdict(int)
 pit_laps_map = defaultdict(list)
 
@@ -116,15 +118,17 @@ for compound, duration in pit_strategy:
 
 # === TOOL DEFINITIONS ===
 tool_instructions = """
-You have access to the following tool:
+You have access to the following tools:
 
 1. get_driver_pace(driver_name, track_name)
    - Returns the average pace (fastest 30% non-pit laps)
    - Input JSON:
       {"tool": "get_driver_pace", "driver_name": "...", "track_name": "..."}
 
-When you want to call the tool, output ONLY valid JSON:
-{"tool": "get_driver_pace", "driver_name": "...", "track_name": "..."}
+2. set_pit_delta(value)
+   - Sets the current pit delta (seconds)
+   - Input JSON:
+      {"tool": "set_pit_delta", "value": NUMBER}
 
 If no tool is needed, respond normally.
 """
@@ -284,10 +288,9 @@ def new_listener():
         recorder.text(process_text)
 
 def process_text(command: str):
-    #print("[Voice] Heard:", command)
-
     # Only respond if transcript contains a trigger word and ends with punctuation
     if not any(trigger.lower() in command.lower() for trigger in TRIGGER_WORDS):
+        print("[Voice] Heard:", command)
         return
     if not command:
         return
@@ -481,7 +484,7 @@ def fetch_api_data(user_name: str):
     return None
     
 def generate_engineer_text(user_request: str) -> str:
-    state = build_race_state_summary(user_name)
+    state = build_race_state_summary(user_name)  # use driver_name not user_name
     memory_section = f"""Long-term memory:
     {memory_summary if memory_summary else "None"}
 
@@ -490,7 +493,7 @@ def generate_engineer_text(user_request: str) -> str:
     """
 
     try:
-        # FIRST CALL — ask Gemma if tool needed
+        # FIRST CALL — ask Gemma if tool is needed
         prompt = f"""
 {ENGINEER_SYSTEM_PROMPT}
 
@@ -505,7 +508,7 @@ Memory:
 User request:
 {user_request}
 
-If you want to call the tool, output ONLY THE TOOL CALL IN JSON.
+If you want to call a tool, output ONLY the JSON tool call.
 Otherwise answer normally.
 """
 
@@ -522,21 +525,34 @@ Otherwise answer normally.
 
         text = resp.text.strip()
 
+        # Try to interpret the model output as a tool call
         # Try parsing tool call JSON
-        tool_call = None
         try:
-            tool_call_candidate = text.strip()
-            tool_call = json.loads(tool_call_candidate)
+            clean = strip_code_fences(text)
+            tool_call = json.loads(clean)
         except json.JSONDecodeError:
-            # No tool call detected, treat as normal text
-            return text
+            # No JSON → normal text response
+            safe_text = (
+                text.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+            )
+            return safe_text
 
-        # If we have a tool call
-        if tool_call and tool_call.get("tool") == "get_driver_pace":
+
+        # --------------------------------------------------------
+        # TOOL CALL EXECUTION
+        # --------------------------------------------------------
+
+        tool_result = None
+
+        # get_driver_pace tool
+        if tool_call.get("tool") == "get_driver_pace":
             avg_ms = get_driver_pace(
-            conn,  # pass your connection object here
-            tool_call["track_name"],
-            tool_call["driver_name"]
+                conn,
+                tool_call["track_name"],
+                tool_call["driver_name"]
+                
             )
             tool_result = {
                 "driver_name": tool_call["driver_name"],
@@ -544,28 +560,62 @@ Otherwise answer normally.
                 "average_ms": avg_ms
             }
 
-            # SECOND CALL — give Gemma the tool result
-            followup_prompt = f"Tool result:\n{json.dumps(tool_result)}\n\nNow produce the final answer."
-            followup = genai_client.models.generate_content(
-                model="gemma-3-27b-it",
-                contents=[followup_prompt],
-                config=types.GenerateContentConfig(
-                    max_output_tokens=150,
-                    temperature=0.4,
-                    response_mime_type="text/plain",
-                ),
-            )
+        # set_pit_delta tool
+        elif tool_call.get("tool") == "set_pit_delta":
+            new_val = set_pit_delta(tool_call["value"])
+            tool_result = {"new_value": new_val}
 
-            final_text = followup.text.strip()
-            final_text = final_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            return final_text
+        # If the tool was not recognized
+        if tool_result is None:
+            return "Radio error. Tool call not recognized."
 
-        # NO TOOL NEEDED → return normal response
-        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        return text
+        # --------------------------------------------------------
+        # SECOND LLM CALL (Summarize results)
+        # --------------------------------------------------------
+
+        followup_prompt = (
+            f"""{ENGINEER_SYSTEM_PROMPT}
+
+            Tool result:\n{json.dumps(tool_result)}
+
+            User request:{user_request}
+            
+            Now produce the final natural-language answer."""
+        )
+        print(followup_prompt)
+        followup = genai_client.models.generate_content(
+            model="gemma-3-27b-it",
+            contents=[followup_prompt],
+            config=types.GenerateContentConfig(
+                max_output_tokens=150,
+                temperature=0.4,
+                response_mime_type="text/plain"
+            ),
+        )
+
+        final_text = followup.text.strip()
+        final_text = (
+            final_text.replace("&", "&amp;")
+                      .replace("<", "&lt;")
+                      .replace(">", "&gt;")
+        )
+        return final_text
 
     except Exception as e:
         return f"Radio error. {str(e)}"
+    
+def strip_code_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        # Remove opening fence with possible language label
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline+1:]
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
+
+
 
 def add_memory(user_text: str, assistant_text: str):
     global memory_recent, memory_summary
@@ -644,6 +694,7 @@ def build_race_state_summary(user_name: str, max_positions: int = 5, clean_laps_
             f"Current lap: {current_lap}",
             f"Fastest lap: {fl}",
             f"Next scheduled pit: {next_pit_str}",
+            f"Pit delta: {pit_delta:.1f} seconds",
             "",
             driver_list_str
         ]
@@ -680,6 +731,12 @@ def get_driver_pace(conn, track_name: str, driver_name: str):
     # Average them
     avg_ms = sum(fastest_segment) / len(fastest_segment)
     return avg_ms
+
+def set_pit_delta(new_value: float):
+    global pit_delta
+    pit_delta = float(new_value)
+    return pit_delta
+
 
 def resolve_driver_name(conn, spoken_name: str):
     cursor = conn.cursor()
