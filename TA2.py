@@ -88,7 +88,7 @@ def tts_worker():
                 ui_state["assistant_state"] = "idle"
 
 # === Config ===
-user_name = "dragonzone583"
+user_name = "OpKaii"
 API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
@@ -147,22 +147,6 @@ You have access to the following tools:
 
 If no tool is needed, respond normally.
 """
-def ui_snapshot_loop():
-    import ui_server  # your FastAPI / WebSocket server module with 'connections' list
-
-    while True:
-        with ui_lock:
-            snapshot = json.dumps(ui_state)
-
-        # Send to all connected clients
-        for ws in list(ui_server.connections):  # copy to avoid modification issues
-            try:
-                ws.send_text(snapshot)
-            except Exception:
-                ui_server.connections.remove(ws)
-
-        print("[UI] Sending snapshot", ui_state)  # debug console
-        time.sleep(0.5)  # adjust frequency as needed
 
 
 def find_device_index(device_name):
@@ -335,7 +319,7 @@ def process_text(command: str):
     command = command.replace("-", "dash")
     original_command = command
     with ui_lock:
-        ui_state["realtime_stt"] = original_command
+        ui_state["realtime_stt"] = command
         ui_state["assistant_state"] = "listening"
 
     driver_resolved, _ = resolve_driver_name(conn, command)
@@ -1134,11 +1118,9 @@ if __name__ == "__main__":
     log_thread = threading.Thread(target=log_reader_loop, daemon=True)
     log_thread.start()
 
-    # === 5. Snapshot sender thread ===
-    snapshot_thread = threading.Thread(target=ui_snapshot_loop, daemon=True)
-    snapshot_thread.start()
-
     #Start UI
+
+
     threading.Thread(
         target=lambda: uvicorn.run(
             "ui_server:app",

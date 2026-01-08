@@ -14,74 +14,78 @@
 </head>
 <body>
 
-<div>
-    <strong>State:</strong> <span id="assistant-state">idle</span>
-</div>
-<div>
-    <strong>Last Engineer Text:</strong>
-    <div id="engineer-text"></div>
-</div>
-<div>
-    <strong>Realtime STT:</strong>
-    <div id="realtime-stt"></div>
-</div>
+<div id="state" class="state">State: idle</div>
+<div><b>STT:</b> <span id="stt"></span></div>
+<div><b>Engineer:</b> <span id="engineer"></span></div>
+<div><b>Lap:</b> <span id="lap"></span></div>
 
 <h3>Drivers</h3>
-<table id="drivers-table" border="1">
-    <thead>
-        <tr>
-            <th>Pos</th>
-            <th>Name</th>
-            <th>Lap</th>
-            <th>Pits</th>
-            <th>Gap to Leader</th>
-        </tr>
-    </thead>
-    <tbody id="drivers-body">
-        <!-- Rows inserted by JS -->
-    </tbody>
+<table>
+  <thead>
+    <tr>
+        <th>Pos</th>
+        <th>Name</th>
+        <th>Lap</th>
+        <th>Pits</th>
+        <th>Gap to Leader</th>
+    </tr>
+  </thead>
+  <tbody id="drivers"></tbody>
 </table>
-
 
 <script>
 const ws = new WebSocket("ws://localhost:8765/ws");
 
-ws.onmessage = function(event) {
-    const snapshot = JSON.parse(event.data);
+ws.onmessage = (e) => {
+  const d = JSON.parse(e.data);
 
-    // --- Update driver table ---
-    const tbody = document.getElementById("drivers-body");
-    tbody.innerHTML = "";
+  // --- Update assistant state & text fields ---
+  const stateEl = document.getElementById("state");
+  if (stateEl) {
+      stateEl.textContent = "State: " + (d.assistant_state || "idle");
+      stateEl.className = "state " + (d.assistant_state || "idle");
+  }
 
-    const driversArray = Object.entries(snapshot.drivers)
-        .map(([name, info]) => ({ name, ...info }))
-        .sort((a, b) => a.position - b.position);
+  const sttEl = document.getElementById("stt");
+  if (sttEl) sttEl.textContent = d.realtime_stt || "";
 
-    driversArray.forEach(driver => {
-        const row = document.createElement("tr");
+  const engineerEl = document.getElementById("engineer");
+  if (engineerEl) engineerEl.textContent = d.last_engineer_text || "";
 
-        row.innerHTML = `
-            <td>${driver.position}</td>
+  const lapEl = document.getElementById("lap");
+  if (lapEl) lapEl.textContent = (d.current_lap != null ? d.current_lap : 0);
+
+  const fastestLapEl = document.getElementById("fastest-lap");
+  if (fastestLapEl) fastestLapEl.textContent = (d.fastest_lap != null ? d.fastest_lap.toFixed(3) : "n/a");
+
+  const pitDeltaEl = document.getElementById("pit-delta");
+  if (pitDeltaEl) pitDeltaEl.textContent = (d.pit_delta != null ? d.pit_delta.toFixed(1) : "-");
+
+  // --- Update driver table ---
+  const tbody = document.getElementById("drivers");
+  if (tbody) {
+      tbody.innerHTML = "";
+
+      const driversArray = Object.entries(d.drivers || {})
+          .map(([name, info]) => ({ name, ...info }))
+          .sort((a, b) => (a.position != null ? a.position : 999) - (b.position != null ? b.position : 999));
+
+      driversArray.forEach(driver => {
+          const gap = (driver.gap_to_leader != null ? driver.gap_to_leader.toFixed(2) + "s" : "-");
+          tbody.innerHTML += `<tr>
+            <td>${driver.position != null ? driver.position : "-"}</td>
             <td>${driver.name}</td>
-            <td>${driver.lap}</td>
-            <td>${driver.pits}</td>
-            <td>${driver.gap_to_leader.toFixed(2)}s</td>
-        `;
-
-        tbody.appendChild(row);
-    });
-
-    // --- Update UI state fields ---
-    document.getElementById("assistant-state").textContent = snapshot.assistant_state;
-    document.getElementById("engineer-text").textContent = snapshot.last_engineer_text;
-    document.getElementById("realtime-stt").textContent = snapshot.realtime_stt;
-
-    // Optional: update other stats
-    document.getElementById("current-lap")?.textContent = snapshot.current_lap;
-    document.getElementById("fastest-lap")?.textContent = snapshot.fastest_lap !== null ? snapshot.fastest_lap.toFixed(3) : "n/a";
-    document.getElementById("pit-delta")?.textContent = snapshot.pit_delta.toFixed(1);
+            <td>${driver.lap != null ? driver.lap : 0}</td>
+            <td>${driver.pits != null ? driver.pits : 0}</td>
+            <td>${gap}</td>
+          </tr>`;
+      });
+  }
 };
 </script>
+
+
+
 
 </body>
 </html>

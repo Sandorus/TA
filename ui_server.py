@@ -1,26 +1,25 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket
 import asyncio
 import threading
+import time
+
 from state import ui_state, ui_lock
 import copy
 
-app = FastAPI()
 
-# === Keep track of all connected clients ===
-connections = []
+app = FastAPI()
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     print("[UI] Client connected")
 
-    # Add client to global list
-    connections.append(ws)
-    try:
-        while True:
-            # Just wait for pings or messages from client (optional)
-            msg = await ws.receive_text()
-            # Optionally handle client messages here
-    except WebSocketDisconnect:
-        print("[UI] Client disconnected")
-        connections.remove(ws)
+    while True:
+        with ui_lock:
+            snapshot = copy.deepcopy(ui_state)
+
+        #print("[UI] Sending snapshot", snapshot)
+        await ws.send_json(snapshot)
+        await asyncio.sleep(0.2)
+
+
