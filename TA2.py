@@ -21,6 +21,9 @@ from pydub import AudioSegment
 import io
 import sqlite3
 from rapidfuzz import process
+import uvicorn
+from state import ui_state, ui_lock
+
 
 # === DATABASE SETUP ===
 DB_PATH = os.path.join("Data", "boatlabs.db")
@@ -76,16 +79,21 @@ def tts_worker():
 
         if callback:
             callback()
+            
         else:
             time.sleep(0.01)  # Avoid tight spinning
 
+        with ui_lock:
+            if not tts_queue:
+                ui_state["assistant_state"] = "idle"
+
 # === Config ===
-user_name = "Sandorus"
+user_name = "dragonzone583"
 API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 9 #1 for tonor mic, 9 for discord
-vcOutputIndex = 25 # 14 for speakers, 23 for discord, 25 for Voicemeeter
+vcInputIndex = 1 #1 for tonor mic, 9 for discord
+vcOutputIndex = 14 # 14 for speakers, 23 for discord, 25 for Voicemeeter
 
 TRIGGER_WORDS = ["Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -139,19 +147,22 @@ You have access to the following tools:
 
 If no tool is needed, respond normally.
 """
-# UI Stuff
-# === UI STATE ===
-ui_state = {
-    "assistant_state": "idle",   # idle | listening | thinking | speaking
-    "realtime_stt": "",
-    "last_engineer_text": "",
-    "current_lap": 0,
-    "fastest_lap": None,
-    "pit_delta": 22.0,
-    "drivers": {},
-}
+def ui_snapshot_loop():
+    import ui_server  # your FastAPI / WebSocket server module with 'connections' list
 
-ui_lock = threading.Lock()
+    while True:
+        with ui_lock:
+            snapshot = json.dumps(ui_state)
+
+        # Send to all connected clients
+        for ws in list(ui_server.connections):  # copy to avoid modification issues
+            try:
+                ws.send_text(snapshot)
+            except Exception:
+                ui_server.connections.remove(ws)
+
+        print("[UI] Sending snapshot", ui_state)  # debug console
+        time.sleep(0.5)  # adjust frequency as needed
 
 
 def find_device_index(device_name):
@@ -240,12 +251,16 @@ def play_tts_message(message: str):
     """
     Sync wrapper: run the async play_message in its own event loop.
     """
-    
+    with ui_lock:
+        ui_state["assistant_state"] = "speaking"
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(play_message(message))
     loop.close()
+
+    with ui_lock:
+        ui_state["assistant_state"] = "idle"
 
 
 def play_notification_sound(path="E:/Songs/Sound effects/F1_Radio_-_Notification_Sound.mp3"):
@@ -319,6 +334,9 @@ def process_text(command: str):
 
     command = command.replace("-", "dash")
     original_command = command
+    with ui_lock:
+        ui_state["realtime_stt"] = original_command
+        ui_state["assistant_state"] = "listening"
 
     driver_resolved, _ = resolve_driver_name(conn, command)
     track_resolved, _ = resolve_track_name(conn, command)
@@ -362,12 +380,17 @@ def replace_fragment(command: str, fragment: str, resolved: str):
     return pattern.sub(resolved, command)
 
 def handle_llm_and_tts(command: str):
+    with ui_lock:
+        ui_state["assistant_state"] = "thinking"
 # Generate text response (Gemma)
     text = generate_engineer_text(command)
     print(f">> [Engineer text] {text}")
 
     # Add to memory
     add_memory(command, text)
+
+    with ui_lock:
+        ui_state["last_engineer_text"] = text
 
     # Split text into chunks only when . or ? is followed by a space or end of string
     # This avoids splitting decimals like 1.233
@@ -401,9 +424,7 @@ def handle_llm_and_tts(command: str):
 def process_realtime_update(text: str):
     global realtime_text
     realtime_text = text
-    with ui_lock:
-        ui_state["realtime_stt"] = text
-        ui_state["assistant_state"] = "listening"
+    
 
 
 def is_improving(user_name):
@@ -793,6 +814,8 @@ def get_driver_pace(conn, track_name: str, driver_name: str):
 def set_pit_delta(new_value: float):
     global pit_delta
     pit_delta = float(new_value)
+    with ui_lock:
+        ui_state["pit_delta"] = pit_delta
     return pit_delta
 
 def get_pit_air():
@@ -913,11 +936,18 @@ def main_loop():
     while True:
         data = fetch_api_data(user_name)
 
-        for entry in data:
+        if not data or "drivers" not in data:
+            time.sleep(2)
+            continue
+
+        for entry in data["drivers"]:
+            if not isinstance(entry, dict):
+                continue
+
             name = entry["name"]
-            time_diff = entry["timeDiff"]
+            time_diff = entry.get("deltaToDriverBefore", 0)
             pits = entry["pits"]
-            team_color = entry["teamColor1"]
+            #team_color = entry["teamColor1"]
 
             # Initialize previous data if new
             if name not in previous_data:
@@ -952,6 +982,20 @@ def main_loop():
             # Update saved data
             previous_data[name]["timeDiff"] = time_diff
             previous_data[name]["pits"] = pits
+
+        with ui_lock:
+            ui_state["drivers"] = {
+                d["name"]: {
+                    "position": d["position"],
+                    "lap": d["lap"],
+                    "gap_to_leader": d["gap_to_leader"],
+                    "gap_ahead": d["gap_ahead"],
+                    "gap_behind": d["gap_behind"],
+                    "pits": d["pits"],
+                }
+                for d in data["drivers"]
+            }
+
 
         time.sleep(5)  # Poll every 5 second (adjust as needed)
 
@@ -1030,6 +1074,10 @@ def log_reader_loop():
                     if fastest_lap is None or lap_time < fastest_lap:
                         fastest_lap = lap_time
 
+                    with ui_lock:
+                        ui_state["current_lap"] = current_lap
+                        ui_state["fastest_lap"] = fastest_lap
+
                     for lap_number, compound in pit_laps:
                         if current_lap == lap_number:
                             message = f"pit for '{compound}' this lap"
@@ -1085,6 +1133,21 @@ if __name__ == "__main__":
     # === 4. Log file reader thread ===
     log_thread = threading.Thread(target=log_reader_loop, daemon=True)
     log_thread.start()
+
+    # === 5. Snapshot sender thread ===
+    snapshot_thread = threading.Thread(target=ui_snapshot_loop, daemon=True)
+    snapshot_thread.start()
+
+    #Start UI
+    threading.Thread(
+        target=lambda: uvicorn.run(
+            "ui_server:app",
+            host="127.0.0.1",
+            port=8765,
+            log_level="warning"
+        ),
+        daemon=True
+    ).start()
 
     try:
         while True:

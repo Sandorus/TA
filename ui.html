@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Race Engineer UI</title>
+  <style>
+    body { font-family: monospace; background: #111; color: #eee; }
+    .state { font-size: 24px; margin-bottom: 10px; }
+    .listening { color: cyan; }
+    .thinking { color: orange; }
+    .speaking { color: lime; }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { border: 1px solid #444; padding: 4px; }
+  </style>
+</head>
+<body>
+
+<div>
+    <strong>State:</strong> <span id="assistant-state">idle</span>
+</div>
+<div>
+    <strong>Last Engineer Text:</strong>
+    <div id="engineer-text"></div>
+</div>
+<div>
+    <strong>Realtime STT:</strong>
+    <div id="realtime-stt"></div>
+</div>
+
+<h3>Drivers</h3>
+<table id="drivers-table" border="1">
+    <thead>
+        <tr>
+            <th>Pos</th>
+            <th>Name</th>
+            <th>Lap</th>
+            <th>Pits</th>
+            <th>Gap to Leader</th>
+        </tr>
+    </thead>
+    <tbody id="drivers-body">
+        <!-- Rows inserted by JS -->
+    </tbody>
+</table>
+
+
+<script>
+const ws = new WebSocket("ws://localhost:8765/ws");
+
+ws.onmessage = function(event) {
+    const snapshot = JSON.parse(event.data);
+
+    // --- Update driver table ---
+    const tbody = document.getElementById("drivers-body");
+    tbody.innerHTML = "";
+
+    const driversArray = Object.entries(snapshot.drivers)
+        .map(([name, info]) => ({ name, ...info }))
+        .sort((a, b) => a.position - b.position);
+
+    driversArray.forEach(driver => {
+        const row = document.createElement("tr");
+
+        row.innerHTML = `
+            <td>${driver.position}</td>
+            <td>${driver.name}</td>
+            <td>${driver.lap}</td>
+            <td>${driver.pits}</td>
+            <td>${driver.gap_to_leader.toFixed(2)}s</td>
+        `;
+
+        tbody.appendChild(row);
+    });
+
+    // --- Update UI state fields ---
+    document.getElementById("assistant-state").textContent = snapshot.assistant_state;
+    document.getElementById("engineer-text").textContent = snapshot.last_engineer_text;
+    document.getElementById("realtime-stt").textContent = snapshot.realtime_stt;
+
+    // Optional: update other stats
+    document.getElementById("current-lap")?.textContent = snapshot.current_lap;
+    document.getElementById("fastest-lap")?.textContent = snapshot.fastest_lap !== null ? snapshot.fastest_lap.toFixed(3) : "n/a";
+    document.getElementById("pit-delta")?.textContent = snapshot.pit_delta.toFixed(1);
+};
+</script>
+
+</body>
+</html>
