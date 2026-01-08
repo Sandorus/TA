@@ -35,7 +35,8 @@ genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 ENGINEER_SYSTEM_PROMPT = (
     "You are a calm, concise race engineer for Minecraft Ice Boat Racing named Timothy Antonelli. "
-    "Prefer brief sentences; include only the most relevant data. "
+    "Prefer brief sentences;" #include only the most relevant data. "
+    "You can respond conversationally or with racing terminology when appropriate."
     #"You like doing walltaps and blockstops to save time"
     #"Blue Ice is the fastest ice, packed ice and normal ice are slower"
 )
@@ -83,8 +84,8 @@ user_name = "Sandorus"
 API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
-vcInputIndex = 1 #1 for tonor mic, 9 for discord
-vcOutputIndex = 14 # 14 for speakers, 23 for discord, 25 for Voicemeeter
+vcInputIndex = 9 #1 for tonor mic, 9 for discord
+vcOutputIndex = 25 # 14 for speakers, 23 for discord, 25 for Voicemeeter
 
 TRIGGER_WORDS = ["Timothy Antonelli","Antonelli","Antonelly","Timothy","Timmy"]
 
@@ -138,6 +139,19 @@ You have access to the following tools:
 
 If no tool is needed, respond normally.
 """
+# UI Stuff
+# === UI STATE ===
+ui_state = {
+    "assistant_state": "idle",   # idle | listening | thinking | speaking
+    "realtime_stt": "",
+    "last_engineer_text": "",
+    "current_lap": 0,
+    "fastest_lap": None,
+    "pit_delta": 22.0,
+    "drivers": {},
+}
+
+ui_lock = threading.Lock()
 
 
 def find_device_index(device_name):
@@ -197,8 +211,10 @@ def get_current_positions(drivers_dict=None):
 async def play_message(message: str):
     voice = "en-GB-SoniaNeural"
     rate = "+20%"
+    pitch = "+0Hz"
+    
     # Generate MP3 audio in memory
-    tts = edge_tts.Communicate(text=message, voice=voice, rate=rate)
+    tts = edge_tts.Communicate(text=message, voice=voice, rate=rate, pitch=pitch)
     mp3_bytes = b""
     async for chunk in tts.stream():
         if chunk["type"] == "audio":
@@ -385,6 +401,9 @@ def handle_llm_and_tts(command: str):
 def process_realtime_update(text: str):
     global realtime_text
     realtime_text = text
+    with ui_lock:
+        ui_state["realtime_stt"] = text
+        ui_state["assistant_state"] = "listening"
 
 
 def is_improving(user_name):
