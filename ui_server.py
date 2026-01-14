@@ -21,5 +21,3 @@ async def ws_endpoint(ws: WebSocket):
         #print("[UI] Sending snapshot", snapshot)
         await ws.send_json(snapshot)
         await asyncio.sleep(0.2)
-
-

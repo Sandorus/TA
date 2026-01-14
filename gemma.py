@@ -3,7 +3,14 @@ import google.generativeai as genai  # <-- note: "generativeai", not "genai"
 
 def main():
     # 1. Configure API key
-    genai.configure(api_key="AIzaSyDxlGRyUFnhMLivHk2IeVNzJjaupVFubWE")
+
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+    if not GEMINI_API_KEY:
+        raise RuntimeError("Set GEMINI_API_KEY in your environment.")
+
+
+    genai.configure(api_key=GEMINI_API_KEY)
 
     # 2. Load Gemma 3 model (IT = Instruction Tuned)
     model = genai.GenerativeModel("gemma-3-27b-it")

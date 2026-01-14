@@ -88,7 +88,7 @@ def tts_worker():
                 ui_state["assistant_state"] = "idle"
 
 # === Config ===
-user_name = "OpKaii"
+user_name = "Sandorus"
 API_URL = "https://api.boatlabs.net/v1/timingsystems/getActiveHeats"
 log_file_path = os.path.expanduser(
     r'C:\Users\Sandorus\AppData\Roaming\ModrinthApp\profiles\Ice Boat Racing (1)\logs\latest.log')
@@ -526,7 +526,7 @@ def fetch_api_data(user_name: str):
             "drivers": normalized,
         }
 
-    print(f"[API] No active heat found for driver '{user_name}'")
+    #print(f"[API] No active heat found for driver '{user_name}'")
     return None
     
 def generate_engineer_text(user_request: str) -> str:
@@ -582,6 +582,7 @@ Otherwise answer normally.
                     .replace("<", "&lt;")
                     .replace(">", "&gt;")
             )
+            print("llm generated :",safe_text)
             return safe_text
         
         try:
@@ -593,6 +594,7 @@ Otherwise answer normally.
                     .replace("<", "&lt;")
                     .replace(">", "&gt;")
             )
+            
             return safe_text
 
 
