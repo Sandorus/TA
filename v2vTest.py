@@ -31,8 +31,16 @@ CONFIG = {
     "realtime_input_config": {
         "automatic_activity_detection": {"disabled": True}
     },
+    "input_audio_transcription": {},   # transcribe user speech
+    "output_audio_transcription": {}   # transcribe model audio output
 }
 activity_started = False
+
+# =========================
+# Transcription queues
+# =========================
+input_transcripts = asyncio.Queue()
+output_transcripts = asyncio.Queue()
 
 # =========================
 # Audio config
@@ -111,40 +119,30 @@ async def listen_audio():
 # =========================
 
 async def send_realtime(session):
-    """Send audio and activity start/end messages."""
     global activity_started
 
     while True:
-        # Wait for PTT
         await ptt_active.wait()
 
-        # Start activity once per press
         if not activity_started:
-            await session.send_realtime_input(
-                activity_start=types.ActivityStart()
-            )
+            await session.send_realtime_input(activity_start=types.ActivityStart())
             activity_started = True
 
-        # Send audio while held
         while ptt_active.is_set():
             msg = await audio_queue_mic.get()
             await session.send_realtime_input(
                 audio=types.Blob(
                     data=msg["data"],
-                    mime_type="audio/pcm;rate=16000",
+                    mime_type="audio/pcm;rate=16000"
                 )
             )
 
-        # PTT released → end activity
         if activity_started:
-            await session.send_realtime_input(
-                activity_end=types.ActivityEnd()
-            )
+            await session.send_realtime_input(activity_end=types.ActivityEnd())
             activity_started = False
             if reconnect_requested.is_set():
                 print("🔁 Reconnecting after user finished speaking")
                 raise asyncio.CancelledError
-
 
 
 # =========================
@@ -152,14 +150,26 @@ async def send_realtime(session):
 # =========================
 
 async def receive_audio(session):
-    """Receive audio responses from Gemini."""
     while True:
         turn = session.receive()
         async for response in turn:
+            # Handle Gemini audio playback
             if response.server_content and response.server_content.model_turn:
                 for part in response.server_content.model_turn.parts:
                     if part.inline_data and isinstance(part.inline_data.data, bytes):
                         audio_queue_output.put_nowait(part.inline_data.data)
+
+            # Handle output transcription (Gemini speech)
+            if response.server_content and response.server_content.output_transcription:
+                text = response.server_content.output_transcription.text
+                await output_transcripts.put(text)
+                print(f"[Gemini said]: {text}")
+
+            # Handle input transcription (user speech)
+            if response.server_content and response.server_content.input_transcription:
+                text = response.server_content.input_transcription.text
+                await input_transcripts.put(text)
+                print(f"[User said]: {text}")
 
         # Clear playback if interrupted
         while not audio_queue_output.empty():
